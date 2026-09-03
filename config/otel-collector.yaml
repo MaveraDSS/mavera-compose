@@ -1,0 +1,48 @@
+# All 29 services call AddOtlpExporter with the default protocol (gRPC/4317)
+# and construct `new Uri(Tracing_Connection_String)`, so the endpoint must be a
+# reachable absolute URI or ~10 of them throw at startup. This collector
+# terminates that gRPC stream and forwards to Seq's OTLP ingestion endpoint.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+
+exporters:
+  otlp_http/seq:
+    endpoint: http://seq:5341/ingest/otlp
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  # Expose the collector's own metrics so you can confirm telemetry is really
+  # flowing: otelcol_receiver_accepted_* and otelcol_exporter_sent_* on :8888.
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/seq]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/seq]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
