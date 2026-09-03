@@ -43,8 +43,10 @@ x-placeholders: &placeholders
   SeriLog_Level: ${LOG_LEVEL:-Information}
   Tracing_Connection_String: http://otel-collector:4317   # MUST be an absolute URI: ~10 services throw on an invalid one
   ServiceSettings_ENV: ${ENV_NAME:-dokploy}
+  # Bare host on purpose: the appsettings templates prefix it themselves
+  # (user-service reads "disco": "https://$ServiceSettings_EnvURL").
   ServiceSettings_EnvURL: ${GATEWAY_HOST:-localhost}
-  ServiceSettings_ClientUrl: http://${GATEWAY_HOST:-localhost}
+  ServiceSettings_ClientUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:-localhost}
 
   # --- SQL Server: one server, seven catalogs ---
   ConnectionStrings_DB_Server: ${DB_SERVER:-sqlserver}
@@ -130,13 +132,17 @@ x-placeholders: &placeholders
 
   # --- IdentityServer ---
   IdentityServer_ApplicationName: Mavera
-  IdentityServer_IssuerUri: http://${IDENTITY_HOST:-localhost}
-  IdentityServer_PublicOrigin: http://${IDENTITY_HOST:-localhost}
+  # These two are advertised in the OIDC discovery document and become the
+  # `iss` claim in every token. TLS terminates at Traefik, so when you put a
+  # real domain behind HTTPS you MUST set PUBLIC_SCHEME=https or clients see
+  # an issuer that does not match the URL they actually reached.
+  IdentityServer_IssuerUri: ${PUBLIC_SCHEME:-http}://${IDENTITY_HOST:-localhost}
+  IdentityServer_PublicOrigin: ${PUBLIC_SCHEME:-http}://${IDENTITY_HOST:-localhost}
   IdentityServer_LoginUrl: /account/login
   IdentityServer_LogoutUrl: /account/logout
   IdentityServer_ErrorUrl: /home/error
   IdentityServer_UnauthorizedUrl: /home/unauthorized
-  IdentityServer_PostLogoutRedirectUri: http://${GATEWAY_HOST:-localhost}
+  IdentityServer_PostLogoutRedirectUri: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:-localhost}
   IdentityServer_SecretKey: ${IDENTITY_SECRET_KEY:-}
   IdentityServer_MembershipHash: ${IDENTITY_MEMBERSHIP_HASH:-}
 
@@ -211,7 +217,7 @@ x-placeholders: &placeholders
   InternalServicesSettings_SystemAccountUserId: ${SYSTEM_ACCOUNT_USER_ID:-}
   CryptoSettings_CryptoIV: ${CRYPTO_IV:-}
   CryptoSettings_CryptoKey: ${CRYPTO_KEY:-}
-  ContractSettings_CallbackUrl: http://${GATEWAY_HOST:-localhost}/contract/callback
+  ContractSettings_CallbackUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:-localhost}/contract/callback
   MailSettings_ApiKey: ${MAIL_API_KEY:-}
   MailSettings_ApiKeyId: ${MAIL_API_KEY_ID:-}
   MailSettings_BccMonitoringEnabled: "false"

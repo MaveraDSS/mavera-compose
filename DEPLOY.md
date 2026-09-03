@@ -152,8 +152,9 @@ supported pattern, so nothing extra is needed.
 | Variable | Value | Notes |
 |---|---|---|
 | `GH_PAT` | a GitHub token | **read-only**, scoped to the 29 `MaveraDSS/*` repos. This is the build-context credential, not the Dokploy connection. |
-| `GATEWAY_HOST` | e.g. `mavera.example.com` | public gateway domain |
-| `IDENTITY_HOST` | e.g. `identity.example.com` | identity server domain |
+| `GATEWAY_HOST` | e.g. `mavera.example.com` | public gateway domain — see *Choosing the hostnames* |
+| `IDENTITY_HOST` | e.g. `identity.example.com` | identity server domain — **must differ from `GATEWAY_HOST`** |
+| `PUBLIC_SCHEME` | `http` or `https` | `https` once the domains have certificates. Feeds `IdentityServer_IssuerUri`. |
 | `DB_PASS` | strong password | **must not contain `$`** — config is rendered with `envsubst` |
 | `MONGO_ROOT_PASS`, `MONGO_PASS` | strong passwords | same `$` rule |
 | `RABBITMQ_PASS`, `MINIO_PASS`, `SEQ_ADMIN_PASS` | strong passwords | same `$` rule |
@@ -166,6 +167,44 @@ supported pattern, so nothing extra is needed.
 | `COMPOSE_PROFILES` | *(empty)* | empty = infrastructure only. Phase 6 relies on this. |
 | `MSSQL_MEMORY_LIMIT_MB` | `2048` | caps SQL Server so it cannot starve the 29 services. Raise to ~6144 on a 32 GB box once things are stable. |
 | `BRANCH` | `develop` | the branch built for all 29 service repos |
+
+### Choosing the hostnames
+
+**Do not use the EC2 public DNS name** (`ec2-1-2-3-4.eu-north-1.compute.amazonaws.com`) for these.
+Three reasons, the first of which is a hard blocker:
+
+1. **They must be two different hostnames.** Each becomes a Traefik `Host()` rule. Give both the same
+   value and the gateway and identity routers match identically, so requests land on whichever wins —
+   unpredictably. You cannot create `identity.ec2-…compute.amazonaws.com`, because you do not control
+   that DNS zone.
+2. **Let's Encrypt refuses to issue for `*.compute.amazonaws.com`** by policy — the ACME server returns
+   *"forbidden by policy"*. So Dokploy's HTTPS toggle cannot work and you are stuck on HTTP.
+3. **The name changes on stop/start** without an Elastic IP. `IDENTITY_HOST` feeds
+   `IdentityServer_IssuerUri`, which is the `iss` claim in every token and the discovery document — if it
+   changes, every previously issued token fails validation. This one fails silently, later.
+
+| Situation | Use |
+|---|---|
+| Proper deployment | a domain you own + an **Elastic IP**: `mavera.dev.example.com` / `identity.dev.example.com`, `PUBLIC_SCHEME=https` |
+| No DNS zone, quick test | wildcard DNS: `mavera.<ip-with-dashes>.sslip.io` / `identity.<ip>.sslip.io` — two distinct names off one IP, and Let's Encrypt will issue for them |
+| Smoke test only | skip domains entirely, leave the defaults, and tunnel: `ssh -L 8080:localhost:80 ubuntu@<vm>`. Phases 06–08 and 10 all work without a domain. |
+
+Use an Elastic IP either way — it is free while attached and removes reason 3.
+
+### `PUBLIC_SCHEME` and TLS
+
+TLS terminates at Traefik, so the containers themselves only ever speak HTTP. `PUBLIC_SCHEME` is what
+the apps *advertise*:
+
+| Variable | With `PUBLIC_SCHEME=https` |
+|---|---|
+| `IdentityServer_IssuerUri` | `https://identity.example.com` |
+| `IdentityServer_PublicOrigin` | `https://identity.example.com` |
+| `IdentityServer_PostLogoutRedirectUri` | `https://mavera.example.com` |
+| `ServiceSettings_ClientUrl` | `https://mavera.example.com` |
+
+Leave it `http` until the certificates are actually issued, then switch it and redeploy. Setting
+`https` before Traefik can serve it gives you an issuer nobody can reach.
 
 ### Generating the `GH_PAT`
 
@@ -276,11 +315,12 @@ BuildKit caches git contexts by resolved commit, so unchanged repos are not rebu
 
 ## Phase 9 — Domains and TLS
 
-1. Point DNS at the VM's public IP:
+1. Point DNS at the VM's **Elastic IP** (two records, two distinct names — see
+   *Choosing the hostnames* in phase 05):
 
    ```
-   mavera.example.com     A   <vm-ip>
-   identity.example.com   A   <vm-ip>
+   mavera.example.com     A   <elastic-ip>
+   identity.example.com   A   <elastic-ip>
    ```
 
 2. In Dokploy → **Domains**, add a domain for service **`mavera-libertine`**, container port **80**,
@@ -289,6 +329,9 @@ BuildKit caches git contexts by resolved commit, so unchanged repos are not rebu
    Letting the UI own the domain means Dokploy manages the certificate. The compose file already
    carries working HTTP Traefik labels and both services join `dokploy-network`; commented `websecure`
    labels are in the file if you would rather declare TLS yourself (match your own `certResolver`).
+
+3. Once the certificates are issued, set `PUBLIC_SCHEME=https` and redeploy so the identity server
+   advertises an issuer that matches what browsers actually reach.
 
 `mavera-libertine` is a YARP gateway whose routing table configures itself from the same placeholder
 set, so it fronts the FE-facing surface with no extra wiring. The other 27 services stay internal.
@@ -335,6 +378,8 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | Config arrives as literal `$Placeholder` | The entrypoint was overridden, or a variable is missing from `x-placeholders`. `docker compose logs <svc>` prints any unrendered names. |
 | `UriFormatException` at startup | `Tracing_Connection_String` empty or not absolute. It must be `http://otel-collector:4317`. |
 | `Name or service not known` for `*.svc.cluster.local` | The target service is not running, or lost its network alias. |
+| Login redirects fail, or `iss` mismatch | `PUBLIC_SCHEME` does not match how clients reach the server, or `IDENTITY_HOST` changed (use an Elastic IP). |
+| Gateway and identity server serve each other's responses | `GATEWAY_HOST` and `IDENTITY_HOST` are the same value; the two Traefik routers collide. |
 | `Invalid object name 'dbo.X'` | The database is empty — Phase 7 not done, or `DB_SERVER` points somewhere unpopulated. |
 | Deploy stalls on `Pulling … unauthorized` | `pull_policy: build` was removed from `x-service-base`; Compose is trying ACR instead of building. |
 | SQL Server eating all RAM | `MSSQL_MEMORY_LIMIT_MB` only applies at first-run setup; `mssql-init` re-applies it via `sp_configure` on every run — re-run it. |
