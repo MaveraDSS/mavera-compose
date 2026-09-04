@@ -168,6 +168,51 @@ supported pattern, so nothing extra is needed.
 | `MSSQL_MEMORY_LIMIT_MB` | `2048` | caps SQL Server so it cannot starve the 29 services. Raise to ~6144 on a 32 GB box once things are stable. |
 | `BRANCH` | `develop` | the branch built for all 29 service repos |
 
+### If the values you set are not being applied
+
+Since the critical variables are now **required**, a `.env` that never reaches Compose makes the deploy
+*fail with the variable's name* rather than quietly substituting a default:
+
+```
+error while interpolating services.mongo-init.environment.MONGO_ROOT_PASS:
+  required variable MONGO_ROOT_PASS is missing a value: MONGO_ROOT_PASS is not set
+```
+
+If instead the stack comes up but on the wrong hostname or with dev passwords, Compose *is* reading a
+`.env` — just not the one you edited. Diagnose on the VM:
+
+```bash
+# 1. find the deployed directory (Dokploy shows the path in the UI)
+ls -la /etc/dokploy/compose/*/code/
+
+cd /etc/dokploy/compose/<app-name>/code
+
+# 2. does a .env exist there, and does it hold YOUR values?
+ls -la .env && grep -E '^(GATEWAY_HOST|IDENTITY_HOST|DB_PASS)=' .env
+
+# 3. what does Compose actually resolve?
+docker compose config | grep -E 'IssuerUri|ConnectionStrings_DB_Pass' | head
+```
+
+| What you see | Cause | Fix |
+|---|---|---|
+| No `.env` in that directory | Dokploy wrote it elsewhere, or the Environment tab was never saved | Save the Environment tab, redeploy. If it still isn't there, use the custom command below. |
+| `.env` exists with the right values, but `docker compose config` shows others | Compose is being run with a different `--project-directory` or `--env-file` | Set the custom command below |
+| A value contains a trailing `#` comment | env-file parsers keep the comment as part of the value | Put comments on their own line — never after a value |
+
+**Custom command.** Dokploy → **Advanced → Custom Command** lets you state the command explicitly.
+It *fully replaces* the default, so include every flag:
+
+```
+compose -p mavera --env-file .env -f docker-compose.yml up -d --build --remove-orphans
+```
+
+**Why `env_file:` is not the answer here.** Dokploy's docs offer `env_file: [.env]` as an alternative to
+`${VAR}` interpolation. That does not work for this stack: `env_file` would inject the *knob* names
+(`DB_PASS`, `GATEWAY_HOST`) into the containers, but the services read the *placeholder* names
+(`ConnectionStrings_DB_Pass`, `IdentityServer_IssuerUri`). The mapping between the two happens in
+`x-placeholders` via interpolation, so Compose must read `.env` at parse time.
+
 ### Choosing the hostnames
 
 **Do not use the EC2 public DNS name** (`ec2-1-2-3-4.eu-north-1.compute.amazonaws.com`) for these.
@@ -378,6 +423,8 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | Config arrives as literal `$Placeholder` | The entrypoint was overridden, or a variable is missing from `x-placeholders`. `docker compose logs <svc>` prints any unrendered names. |
 | `UriFormatException` at startup | `Tracing_Connection_String` empty or not absolute. It must be `http://otel-collector:4317`. |
 | `Name or service not known` for `*.svc.cluster.local` | The target service is not running, or lost its network alias. |
+| Deploy aborts: `required variable X is missing a value` | Working as intended — Dokploy's `.env` is not reaching Compose. See *If the values you set are not being applied*. |
+| Stack comes up on `localhost` with dev passwords | You are on an older revision of this file that still had `${VAR:-default}` fallbacks. Pull the current one. |
 | Login redirects fail, or `iss` mismatch | `PUBLIC_SCHEME` does not match how clients reach the server, or `IDENTITY_HOST` changed (use an Elastic IP). |
 | Gateway and identity server serve each other's responses | `GATEWAY_HOST` and `IDENTITY_HOST` are the same value; the two Traefik routers collide. |
 | `Invalid object name 'dbo.X'` | The database is empty — Phase 7 not done, or `DB_SERVER` points somewhere unpopulated. |

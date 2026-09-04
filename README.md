@@ -421,7 +421,11 @@ needs a populated SQL schema or real Okta/Apryse credentials.
 ## Verifying a deployment
 
 ```bash
-# 1. config resolves (no daemon needed)
+# 1. config resolves (no daemon needed). Requires a .env with the required
+#    variables set: GATEWAY_HOST, IDENTITY_HOST, DB_PASS, MONGO_ROOT_PASS,
+#    MONGO_PASS, RABBITMQ_PASS, MINIO_PASS, SEQ_ADMIN_PASS. It fails naming
+#    any that are unset or blank -- deliberately, so a missing .env can never
+#    deploy silently with dev defaults.
 docker compose config >/dev/null && echo OK
 COMPOSE_PROFILES=all docker compose config --services | grep -c '^mavera-'   # 29
 

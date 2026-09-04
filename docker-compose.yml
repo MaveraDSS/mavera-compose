@@ -45,13 +45,13 @@ x-placeholders: &placeholders
   ServiceSettings_ENV: ${ENV_NAME:-dokploy}
   # Bare host on purpose: the appsettings templates prefix it themselves
   # (user-service reads "disco": "https://$ServiceSettings_EnvURL").
-  ServiceSettings_EnvURL: ${GATEWAY_HOST:-localhost}
-  ServiceSettings_ClientUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:-localhost}
+  ServiceSettings_EnvURL: ${GATEWAY_HOST:?GATEWAY_HOST is not set}
+  ServiceSettings_ClientUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}
 
   # --- SQL Server: one server, seven catalogs ---
   ConnectionStrings_DB_Server: ${DB_SERVER:-sqlserver}
   ConnectionStrings_DB_User: ${DB_USER:-sa}
-  ConnectionStrings_DB_Pass: ${DB_PASS:-Mavera_L0cal_Dev}
+  ConnectionStrings_DB_Pass: ${DB_PASS:?DB_PASS is not set}
   ConnectionStrings_DB_Name: vera-dev02                  # restored manually; see README
   ConnectionStrings_DB_InboxOutbox: MaveraInboxOutbox
   ConnectionStrings_CaregiverContext_DB_Name: vera-caregivers-dev02   # restored manually
@@ -63,7 +63,7 @@ x-placeholders: &placeholders
   # --- MongoDB: one server, eleven databases ---
   ConnectionStrings_DB_Mongo_Server: mongo
   ConnectionStrings_DB_Mongo_User: ${MONGO_USER:-mavera}
-  ConnectionStrings_DB_Mongo_Pass: ${MONGO_PASS:-mavera}
+  ConnectionStrings_DB_Mongo_Pass: ${MONGO_PASS:?MONGO_PASS is not set}
   ConnectionStrings_DB_Mongo_AuditLoger: audit-logs
   ConnectionStrings_DB_Mongo_EvaluationService: evaluation-service
   ConnectionStrings_DB_Mongo_DocumentProcessor: document-processor
@@ -78,7 +78,7 @@ x-placeholders: &placeholders
 
   # --- RabbitMQ (host is hard-coded in the templates; see the alias on the broker) ---
   MessageBroker_Username: ${RABBITMQ_USER:-mavera}
-  MessageBroker_Password: ${RABBITMQ_PASS:-mavera}
+  MessageBroker_Password: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
   MessageBroker_VirtualHost: "/"
 
   # --- Redis ---
@@ -89,7 +89,7 @@ x-placeholders: &placeholders
   # --- Object storage (MinIO, S3-compatible) ---
   BucketProviderUrl: http://minio:9000
   BucketProviderKey: ${MINIO_USER:-mavera}
-  BucketProviderSecret: ${MINIO_PASS:-mavera_minio_dev}
+  BucketProviderSecret: ${MINIO_PASS:?MINIO_PASS is not set}
   BucketName: ${BUCKET_ASSETS:-mavera-assets}
   Bucket_DocumentsBucketName: ${BUCKET_DOCUMENTS:-mavera-documents}
   Bucket_Region: ${BUCKET_REGION:-us-east-1}
@@ -136,13 +136,13 @@ x-placeholders: &placeholders
   # `iss` claim in every token. TLS terminates at Traefik, so when you put a
   # real domain behind HTTPS you MUST set PUBLIC_SCHEME=https or clients see
   # an issuer that does not match the URL they actually reached.
-  IdentityServer_IssuerUri: ${PUBLIC_SCHEME:-http}://${IDENTITY_HOST:-localhost}
-  IdentityServer_PublicOrigin: ${PUBLIC_SCHEME:-http}://${IDENTITY_HOST:-localhost}
+  IdentityServer_IssuerUri: ${PUBLIC_SCHEME:-http}://${IDENTITY_HOST:?IDENTITY_HOST is not set}
+  IdentityServer_PublicOrigin: ${PUBLIC_SCHEME:-http}://${IDENTITY_HOST:?IDENTITY_HOST is not set}
   IdentityServer_LoginUrl: /account/login
   IdentityServer_LogoutUrl: /account/logout
   IdentityServer_ErrorUrl: /home/error
   IdentityServer_UnauthorizedUrl: /home/unauthorized
-  IdentityServer_PostLogoutRedirectUri: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:-localhost}
+  IdentityServer_PostLogoutRedirectUri: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}
   IdentityServer_SecretKey: ${IDENTITY_SECRET_KEY:-}
   IdentityServer_MembershipHash: ${IDENTITY_MEMBERSHIP_HASH:-}
 
@@ -217,7 +217,7 @@ x-placeholders: &placeholders
   InternalServicesSettings_SystemAccountUserId: ${SYSTEM_ACCOUNT_USER_ID:-}
   CryptoSettings_CryptoIV: ${CRYPTO_IV:-}
   CryptoSettings_CryptoKey: ${CRYPTO_KEY:-}
-  ContractSettings_CallbackUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:-localhost}/contract/callback
+  ContractSettings_CallbackUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}/contract/callback
   MailSettings_ApiKey: ${MAIL_API_KEY:-}
   MailSettings_ApiKeyId: ${MAIL_API_KEY_ID:-}
   MailSettings_BccMonitoringEnabled: "false"
@@ -288,7 +288,7 @@ services:
     user: root
     environment:
       ACCEPT_EULA: "Y"
-      MSSQL_SA_PASSWORD: ${DB_PASS:-Mavera_L0cal_Dev}
+      MSSQL_SA_PASSWORD: ${DB_PASS:?DB_PASS is not set}
       MSSQL_PID: Developer
       MSSQL_AGENT_ENABLED: "true"
       # SQL Server on Linux otherwise grows to ~80% of host RAM, which starves
@@ -320,7 +320,7 @@ services:
     depends_on:
       sqlserver: { condition: service_healthy }
     environment:
-      DB_PASS: ${DB_PASS:-Mavera_L0cal_Dev}
+      DB_PASS: ${DB_PASS:?DB_PASS is not set}
       MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
     volumes:
       - ./config/mssql-init:/init:ro
@@ -362,7 +362,7 @@ services:
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-mavera}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-mavera}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
       RABBITMQ_DEFAULT_VHOST: "/"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
@@ -383,7 +383,7 @@ services:
     restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS:-mavera_mongo_dev}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS:?MONGO_ROOT_PASS is not set}
     volumes:
       - mongo-data:/data/db
     healthcheck:
@@ -401,9 +401,9 @@ services:
       mongo: { condition: service_healthy }
     environment:
       MONGO_APP_USER: ${MONGO_USER:-mavera}
-      MONGO_APP_PASS: ${MONGO_PASS:-mavera}
+      MONGO_APP_PASS: ${MONGO_PASS:?MONGO_PASS is not set}
       MONGO_ROOT_USER: ${MONGO_ROOT_USER:-root}
-      MONGO_ROOT_PASS: ${MONGO_ROOT_PASS:-mavera_mongo_dev}
+      MONGO_ROOT_PASS: ${MONGO_ROOT_PASS:?MONGO_ROOT_PASS is not set}
     volumes:
       - ./config/mongo-init.js:/init/mongo-init.js:ro
     entrypoint:
@@ -421,7 +421,7 @@ services:
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${MINIO_USER:-mavera}
-      MINIO_ROOT_PASSWORD: ${MINIO_PASS:-mavera_minio_dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASS:?MINIO_PASS is not set}
     volumes:
       - minio-data:/data
     healthcheck:
@@ -439,7 +439,7 @@ services:
       minio: { condition: service_healthy }
     environment:
       MINIO_ROOT_USER: ${MINIO_USER:-mavera}
-      MINIO_ROOT_PASSWORD: ${MINIO_PASS:-mavera_minio_dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASS:?MINIO_PASS is not set}
       BUCKET_ASSETS: ${BUCKET_ASSETS:-mavera-assets}
       BUCKET_DOCUMENTS: ${BUCKET_DOCUMENTS:-mavera-documents}
     volumes:
@@ -457,7 +457,7 @@ services:
       # can be given a public Dokploy domain, and that would expose every log.
       # Ingestion stays anonymous (Seq does not require API keys by default),
       # so the collector needs no credentials.
-      SEQ_FIRSTRUN_ADMINPASSWORD: ${SEQ_ADMIN_PASS:-mavera_seq_dev}
+      SEQ_FIRSTRUN_ADMINPASSWORD: ${SEQ_ADMIN_PASS:?SEQ_ADMIN_PASS is not set}
     volumes:
       - seq-data:/data
     networks: [mavera]
@@ -506,13 +506,13 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=dokploy-network
-      - traefik.http.routers.mavera-identity.rule=Host(`${IDENTITY_HOST:-identity.localhost}`)
+      - traefik.http.routers.mavera-identity.rule=Host(`${IDENTITY_HOST:?IDENTITY_HOST is not set}`)
       - traefik.http.routers.mavera-identity.entrypoints=web
       - traefik.http.services.mavera-identity.loadbalancer.server.port=80
       # For HTTPS, prefer adding the domain in the Dokploy UI (it manages the
       # labels and the certificate itself). If you would rather do it here,
       # uncomment these and match your Traefik certResolver name:
-      # - traefik.http.routers.mavera-identity-tls.rule=Host(`${IDENTITY_HOST:-identity.localhost}`)
+      # - traefik.http.routers.mavera-identity-tls.rule=Host(`${IDENTITY_HOST:?IDENTITY_HOST is not set}`)
       # - traefik.http.routers.mavera-identity-tls.entrypoints=websecure
       # - traefik.http.routers.mavera-identity-tls.tls.certresolver=letsencrypt
       # - traefik.http.services.mavera-identity.loadbalancer.server.scheme=http
@@ -538,13 +538,13 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=dokploy-network
-      - traefik.http.routers.mavera-gateway.rule=Host(`${GATEWAY_HOST:-mavera.localhost}`)
+      - traefik.http.routers.mavera-gateway.rule=Host(`${GATEWAY_HOST:?GATEWAY_HOST is not set}`)
       - traefik.http.routers.mavera-gateway.entrypoints=web
       - traefik.http.services.mavera-gateway.loadbalancer.server.port=80
       # For HTTPS, prefer adding the domain in the Dokploy UI (it manages the
       # labels and the certificate itself). If you would rather do it here,
       # uncomment these and match your Traefik certResolver name:
-      # - traefik.http.routers.mavera-gateway-tls.rule=Host(`${GATEWAY_HOST:-mavera.localhost}`)
+      # - traefik.http.routers.mavera-gateway-tls.rule=Host(`${GATEWAY_HOST:?GATEWAY_HOST is not set}`)
       # - traefik.http.routers.mavera-gateway-tls.entrypoints=websecure
       # - traefik.http.routers.mavera-gateway-tls.tls.certresolver=letsencrypt
       # - traefik.http.services.mavera-gateway.loadbalancer.server.scheme=http
