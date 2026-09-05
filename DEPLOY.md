@@ -141,11 +141,9 @@ In the Dokploy UI:
 
 ## Phase 5 — Environment variables
 
-Open the **Environment** tab and paste the contents of `.env.example`, then fill in the values below.
-
-Dokploy writes this to a `.env` file next to the compose file. It does **not** inject those variables
-into containers directly — this compose file reads them with `${VAR}` interpolation, which is the
-supported pattern, so nothing extra is needed.
+Paste the contents of `.env.example` into the **Environment** tab and fill in the values below — then
+**turn on env-file generation** in that tab, or Compose will not see any of them. See
+*Turn on env-file generation* below.
 
 ### Must be set
 
@@ -168,50 +166,63 @@ supported pattern, so nothing extra is needed.
 | `MSSQL_MEMORY_LIMIT_MB` | `2048` | caps SQL Server so it cannot starve the 29 services. Raise to ~6144 on a 32 GB box once things are stable. |
 | `BRANCH` | `develop` | the branch built for all 29 service repos |
 
-### If the values you set are not being applied
+### Turn on env-file generation — this is the step that trips people up
 
-Since the critical variables are now **required**, a `.env` that never reaches Compose makes the deploy
-*fail with the variable's name* rather than quietly substituting a default:
+Paste the contents of `.env.example` into the **Environment** tab, fill in the values, and **enable the
+switch that generates the environment file** (in the same tab). Without it Dokploy holds the variables
+but never writes the `.env` next to the compose file, so Compose has nothing to interpolate from and
+every required variable fails:
 
 ```
-error while interpolating services.mongo-init.environment.MONGO_ROOT_PASS:
-  required variable MONGO_ROOT_PASS is missing a value: MONGO_ROOT_PASS is not set
+error while interpolating services.mavera-ai-client-relevance-score.environment.BucketProviderSecret:
+  required variable MINIO_PASS is missing a value: MINIO_PASS is not set
 ```
 
-If instead the stack comes up but on the wrong hostname or with dev passwords, Compose *is* reading a
-`.env` — just not the one you edited. Diagnose on the VM:
+With the switch on, the file appears in the application's directory alongside `docker-compose.yml`,
+Compose picks it up automatically, and no extra flags are needed.
+
+Confirm it on the VM after saving:
 
 ```bash
-# 1. find the deployed directory (Dokploy shows the path in the UI)
-ls -la /etc/dokploy/compose/*/code/
-
 cd /etc/dokploy/compose/<app-name>/code
-
-# 2. does a .env exist there, and does it hold YOUR values?
-ls -la .env && grep -E '^(GATEWAY_HOST|IDENTITY_HOST|DB_PASS)=' .env
-
-# 3. what does Compose actually resolve?
-docker compose config | grep -E 'IssuerUri|ConnectionStrings_DB_Pass' | head
+ls -la .env && grep -E '^(GATEWAY_HOST|IDENTITY_HOST|MINIO_PASS)=' .env
+docker compose config >/dev/null && echo "interpolation OK"
 ```
 
-| What you see | Cause | Fix |
-|---|---|---|
-| No `.env` in that directory | Dokploy wrote it elsewhere, or the Environment tab was never saved | Save the Environment tab, redeploy. If it still isn't there, use the custom command below. |
-| `.env` exists with the right values, but `docker compose config` shows others | Compose is being run with a different `--project-directory` or `--env-file` | Set the custom command below |
-| A value contains a trailing `#` comment | env-file parsers keep the comment as part of the value | Put comments on their own line — never after a value |
+`COMPOSE_PROFILES` belongs in this same set of variables — it is what selects which services deploy.
 
-**Custom command.** Dokploy → **Advanced → Custom Command** lets you state the command explicitly.
-It *fully replaces* the default, so include every flag:
+#### Fallback: an env file you control
+
+If the generated file still lands in the wrong directory — [Dokploy #2777](https://github.com/Dokploy/dokploy/issues/2777)
+reports it being written to `/etc/dokploy/compose/<app>/.env` while Compose runs with cwd
+`/etc/dokploy/compose/<app>/code/`, because the path is derived from a `composePath` that can go stale —
+keep the file at a fixed absolute path **outside** the cloned directory, where the per-deploy `git clone`
+cannot clear it, and point Compose at it explicitly:
+
+```bash
+sudo install -d -m 700 /etc/dokploy/env
+sudo cp /etc/dokploy/compose/<app-name>/code/.env.example /etc/dokploy/env/mavera.env
+sudo chmod 600 /etc/dokploy/env/mavera.env
+sudo nano /etc/dokploy/env/mavera.env
+```
+
+Then Dokploy → **Advanced → Custom Command** (it *fully replaces* the default, so include every flag):
 
 ```
-compose -p mavera --env-file .env -f docker-compose.yml up -d --build --remove-orphans
+compose -p mavera --env-file /etc/dokploy/env/mavera.env -f docker-compose.yml up -d --build --remove-orphans
 ```
 
-**Why `env_file:` is not the answer here.** Dokploy's docs offer `env_file: [.env]` as an alternative to
-`${VAR}` interpolation. That does not work for this stack: `env_file` would inject the *knob* names
-(`DB_PASS`, `GATEWAY_HOST`) into the containers, but the services read the *placeholder* names
-(`ConnectionStrings_DB_Pass`, `IdentityServer_IssuerUri`). The mapping between the two happens in
-`x-placeholders` via interpolation, so Compose must read `.env` at parse time.
+Verified: an absolute `--env-file` satisfies interpolation with no `.env` in the project directory, that
+flag ordering is accepted, `COMPOSE_PROFILES` is honoured from the file, and the values reach both the
+infrastructure containers and the placeholder mapping. The cost is that changes are made over SSH rather
+than in the UI.
+
+#### Why `env_file:` is not the answer
+
+Dokploy's docs offer `env_file: [.env]` as an alternative to `${VAR}` interpolation. It does not work
+here: `env_file` injects the *knob* names (`MINIO_PASS`, `DB_PASS`) into containers, but the services
+read the *placeholder* names (`BucketProviderSecret`, `ConnectionStrings_DB_Pass`). The mapping happens
+in `x-placeholders` via interpolation, so Compose must resolve the values at parse time.
 
 ### Choosing the hostnames
 
@@ -235,6 +246,55 @@ Three reasons, the first of which is a hard blocker:
 | Smoke test only | skip domains entirely, leave the defaults, and tunnel: `ssh -L 8080:localhost:80 ubuntu@<vm>`. Phases 06–08 and 10 all work without a domain. |
 
 Use an Elastic IP either way — it is free while attached and removes reason 3.
+
+#### Setting up the DNS records
+
+Two **A records**, both pointing at the VM's **Elastic IP**. Using `example.com` as your domain:
+
+| Type | Name / Host | Points to | TTL |
+|---|---|---|---|
+| A | `mavera` | `<elastic-ip>` | 300 |
+| A | `identity` | `<elastic-ip>` | 300 |
+
+giving `mavera.example.com` (gateway) and `identity.example.com` (identity server).
+
+Registrar gotchas worth knowing:
+
+- **The Name field takes the label only** — enter `mavera`, not `mavera.example.com`. Most panels
+  (Hostinger, Namecheap, GoDaddy) append the domain for you, so the full name produces
+  `mavera.example.com.example.com`. Some panels show the resulting FQDN as you type; check it.
+- **Records must live wherever the nameservers point.** If the domain still uses the registrar's default
+  nameservers, add them in the registrar's DNS panel. If you have pointed it at Cloudflare, Route 53 or
+  anywhere else, the registrar's DNS panel is ignored — add them there instead.
+- **A record, not CNAME.** A CNAME to the EC2 public DNS would resolve, but it reintroduces the
+  stop/start problem from reason 3 above.
+- **Keep TTL low (300) while setting up**, so a typo costs five minutes rather than a day. Raise it later.
+- If you later put **Cloudflare** in front, leave the proxy off (grey cloud) until Let's Encrypt has
+  issued, or use DNS-01 — a proxied record can interfere with the HTTP-01 challenge.
+
+Verify before touching Dokploy — both must return the Elastic IP:
+
+```bash
+dig +short mavera.example.com
+dig +short identity.example.com
+```
+
+Then set the two variables and leave `PUBLIC_SCHEME=http` until the certificates exist:
+
+```
+GATEWAY_HOST=mavera.example.com
+IDENTITY_HOST=identity.example.com
+PUBLIC_SCHEME=http
+```
+
+**Naming, if you expect more environments later.** The flat scheme above is fine for one deployment. If
+dev/stage/prod will each get a VM, scope the environment in the name from the start — `mavera.dev`,
+`identity.dev`, then `mavera.stage`, `identity.stage` — rather than renaming later. Renaming
+`IDENTITY_HOST` changes the token issuer, which invalidates every issued token.
+
+**Optional third record.** If you want the Seq log UI on a domain rather than an SSH tunnel, add
+`logs` → `<elastic-ip>` and point a Dokploy domain at the `seq` service on port 80. It is behind Seq's
+own admin login (`SEQ_ADMIN_PASS`), but it does expose every service's logs, so weigh that.
 
 ### `PUBLIC_SCHEME` and TLS
 
@@ -423,7 +483,7 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | Config arrives as literal `$Placeholder` | The entrypoint was overridden, or a variable is missing from `x-placeholders`. `docker compose logs <svc>` prints any unrendered names. |
 | `UriFormatException` at startup | `Tracing_Connection_String` empty or not absolute. It must be `http://otel-collector:4317`. |
 | `Name or service not known` for `*.svc.cluster.local` | The target service is not running, or lost its network alias. |
-| Deploy aborts: `required variable X is missing a value` | Working as intended — Dokploy's `.env` is not reaching Compose. See *If the values you set are not being applied*. |
+| Deploy aborts: `required variable X is missing a value` | Env-file generation is off in the Environment tab, so no `.env` is written next to the compose file. Turn it on. If the file lands in the wrong directory instead, use the absolute `--env-file` fallback. |
 | Stack comes up on `localhost` with dev passwords | You are on an older revision of this file that still had `${VAR:-default}` fallbacks. Pull the current one. |
 | Login redirects fail, or `iss` mismatch | `PUBLIC_SCHEME` does not match how clients reach the server, or `IDENTITY_HOST` changed (use an Elastic IP). |
 | Gateway and identity server serve each other's responses | `GATEWAY_HOST` and `IDENTITY_HOST` are the same value; the two Traefik routers collide. |
