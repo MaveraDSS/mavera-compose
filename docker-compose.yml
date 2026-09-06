@@ -21,6 +21,18 @@
 #   in-cluster URLs resolve unchanged. `rabbitmq.rabbitmq.svc.cluster.local` is
 #   hard-coded in 24 repos, so the broker carries that alias too.
 #
+# WHICH BRANCH IS BUILT
+#   All build contexts resolve `#${BRANCH:-develop}` except three repos that
+#   have not cut the current release branch — mavera-identity-server,
+#   mavera-news-manager and mavera-audit — which use `${BRANCH_FALLBACK:-develop}`.
+#   Re-check membership before bumping BRANCH; when a repo catches up, move its
+#   context back onto ${BRANCH}. To list the repos that still need the fallback:
+#
+#     REL='release%2Fv.be-2026-04-01'
+#     for r in $(grep -oE 'MaveraDSS/[a-z0-9-]+' docker-compose.yml | sort -u); do
+#       gh api "repos/$r/branches/$REL" >/dev/null 2>&1 || echo "fallback: $r"
+#     done
+#
 # DOKPLOY
 #   Compose Type must be "Docker Compose", not "Stack" — Swarm does not
 #   support `build`. See README.md.
@@ -31,7 +43,7 @@ name: mavera
 # -----------------------------------------------------------------------------
 # The complete placeholder set. envsubst blanks any variable it cannot resolve,
 # so every token appearing in any of the 29 appsettings.json files is listed
-# here — 163 in total.
+# here — 165 in total.
 # -----------------------------------------------------------------------------
 x-placeholders: &placeholders
   ASPNETCORE_ENVIRONMENT: Production          # matches the k8s overlays; no appsettings.Production.json exists in any repo
@@ -129,6 +141,10 @@ x-placeholders: &placeholders
   # non-resolving name so the URLs stay syntactically valid.
   ServiceSettings_Services_Translation: mavera-translation-service
   ServiceSettings_Services_EventPredict: not-configured
+  # Bare host on purpose: libertine's YARP cluster addresses this one as
+  # http://$VAR/ with no ".svc.cluster.local" suffix. It is a Python GPU
+  # inference service (mavera-ai-idp2-inference), outside these 29 repos.
+  ServiceSettings_Services_Idp2: ${AI_IDP2_HOST:-not-configured}
 
   # --- IdentityServer ---
   IdentityServer_ApplicationName: Mavera
@@ -145,6 +161,9 @@ x-placeholders: &placeholders
   IdentityServer_PostLogoutRedirectUri: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}
   IdentityServer_SecretKey: ${IDENTITY_SECRET_KEY:-}
   IdentityServer_MembershipHash: ${IDENTITY_MEMBERSHIP_HASH:-}
+  # user-service reads this as a whole URL ("IdentityClient": { "BaseUrl": ... }),
+  # not a host fragment, so it carries the scheme itself.
+  IdentityClient_BaseUrl: http://mavera-identity-client.svc.cluster.local
 
   # --- Gotenberg (PDF conversion engine used by file-conversion-service) ---
   GotenbergSharpClient_ServiceUrl: gotenberg:3000
@@ -488,7 +507,8 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-identity-server:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-identity-server.git#${BRANCH:-develop}
+      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-identity-server.git#${BRANCH_FALLBACK:-develop}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -677,7 +697,8 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-news-manager:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-news-manager.git#${BRANCH:-develop}
+      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-news-manager.git#${BRANCH_FALLBACK:-develop}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -692,7 +713,8 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-audit:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-audit.git#${BRANCH:-develop}
+      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-audit.git#${BRANCH_FALLBACK:-develop}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -1041,7 +1063,8 @@ services:
   #   <<: *service-base
   #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-translation-service:${TAG:-develop}
   #   build:
-  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-translation-service.git#${BRANCH:-develop}
+  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-translation-service.git#${BRANCH_FALLBACK:-develop}
   #     dockerfile: dockerfile/Dockerfile
   #   profiles: ["extras", "all"]
   #   environment:
@@ -1056,7 +1079,8 @@ services:
   #   <<: *service-base
   #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-client-webhook:${TAG:-develop}
   #   build:
-  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-webhook.git#${BRANCH:-develop}
+  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-webhook.git#${BRANCH_FALLBACK:-develop}
   #     dockerfile: dockerfile/Dockerfile
   #   profiles: ["extras", "all"]
   #   environment:
@@ -1071,7 +1095,8 @@ services:
   #   <<: *service-base
   #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-client-external-service:${TAG:-develop}
   #   build:
-  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-external-service.git#${BRANCH:-develop}
+  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-external-service.git#${BRANCH_FALLBACK:-develop}
   #     dockerfile: dockerfile/Dockerfile
   #   profiles: ["extras", "all"]
   #   environment:

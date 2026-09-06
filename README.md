@@ -145,7 +145,7 @@ Verified on Docker Desktop 29.1.3 / Compose **v5.0.1** (Windows): any `build.con
 git URL fails before the build starts, because Compose resolves it as a local path:
 
 ```
-failed to evaluate path "https://github.com/...git#develop":
+failed to evaluate path "https://github.com/...git#release/v.be-2026-04-01":
   CreateFile C:\...\mavera-compose\https:: The filename, directory name, or volume label syntax is incorrect.
 ```
 
@@ -317,10 +317,24 @@ name it `10-something.sql` to run after the bootstrap.
 
 ### 2. `GH_PAT` is embedded in the build-context URL
 
-Build contexts are `https://x-access-token:${GH_PAT}@github.com/MaveraDSS/<repo>.git#develop`, and
+Build contexts are `https://x-access-token:${GH_PAT}@github.com/MaveraDSS/<repo>.git#${BRANCH}`, and
 BuildKit records that URL in build history. Use a **fine-grained, read-only, short-lived** PAT scoped to
 these repos (or a GitHub App installation token) and rotate it. Removing this exposure is the main reason
 to switch to pull-only — see below.
+
+### 2b. Which branch each repo is built from
+
+`BRANCH` is the branch built for every service repo that has it — currently
+`release/v.be-2026-04-01`, which 26 of the 29 repos carry.
+
+Three do not, and their build contexts read `BRANCH_FALLBACK` (`develop`) instead:
+`mavera-identity-server`, `mavera-news-manager`, `mavera-audit`. Compose has no conditionals, so
+the split is expressed as two knobs rather than resolved at deploy time. Re-check membership
+before bumping `BRANCH` — the command is in the `docker-compose.yml` header and in DEPLOY.md's
+*Ongoing* section — and move any repo that has caught up back onto `${BRANCH}`.
+
+`TAG` is separate and names the locally built images. It is `release-v.be-2026-04-01`, dashed
+because Docker tags cannot contain `/`.
 
 ### 3. First deploy is heavy
 
@@ -341,8 +355,19 @@ host, so classification/summarisation/relevance calls will fail until you point 
 
 ### 5. Blank secrets
 
-Okta, Apryse (`APRYSE_LICENSE_KEY`), mail, SMS, SMB, Kuralink and the crypto keys are empty by default.
+Apryse (`APRYSE_LICENSE_KEY`), mail, SMS, SMB, Kuralink and the crypto keys are empty by default.
 Flows depending on them will not work. OCR and PDF generation in particular need a valid Apryse licence.
+
+**Okta is the exception on `release/v.be-2026-04-01` — it is no longer optional.** That branch
+replaces the shared-secret internal auth (`$InternalServicesSettings_Secret`, `$ServiceSettings_EnvURL`)
+with Okta client credentials across ~24 services: they build a discovery document as
+`https://$Okta_Domain/oauth2/$Okta_AuthServerId` and exchange `$Okta_InternalServices_ClientId` /
+`$Okta_InternalServices_Secret` for an `internalapi` token. So `OKTA_DOMAIN`,
+`OKTA_AUTH_SERVER_ID`, `OKTA_INTERNAL_CLIENT_ID` and `OKTA_INTERNAL_SECRET` must be set for the
+`platform` profile to function. Infrastructure-only deploys still come up without them.
+
+`INTERNAL_SERVICES_SECRET` must stay populated too — the three repos on `BRANCH_FALLBACK` are
+still on the pre-Okta scheme.
 
 ### 6. Passwords must not contain `$`
 
@@ -392,7 +417,9 @@ else changes. That removes both the long build and the `GH_PAT` exposure.
 
 ## What has actually been verified
 
-Run against Docker 29.1.3 on 2026-09-03, infrastructure plus `mavera-audit`:
+Run against Docker 29.1.3 on 2026-09-03, infrastructure plus `mavera-audit`. This predates the
+switch to `release/v.be-2026-04-01`, so the image tag below is the `develop` one that was actually
+built; the contract each row demonstrates is unchanged by the branch switch.
 
 | Check | Result |
 |---|---|

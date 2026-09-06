@@ -156,6 +156,23 @@ Paste the contents of `.env.example` into the **Environment** tab and fill in th
 | `DB_PASS` | strong password | **must not contain `$`** — config is rendered with `envsubst` |
 | `MONGO_ROOT_PASS`, `MONGO_PASS` | strong passwords | same `$` rule |
 | `RABBITMQ_PASS`, `MINIO_PASS`, `SEQ_ADMIN_PASS` | strong passwords | same `$` rule |
+| `OKTA_DOMAIN`, `OKTA_AUTH_SERVER_ID` | your Okta org + auth server | see *Okta is now required* below |
+| `OKTA_INTERNAL_CLIENT_ID`, `OKTA_INTERNAL_SECRET` | Okta app credentials | the client-credentials pair for the `internalapi` scope |
+| `INTERNAL_SERVICES_SECRET` | shared secret | still read by the three repos on `BRANCH_FALLBACK` |
+
+#### Okta is now required
+
+`release/v.be-2026-04-01` moves service-to-service authentication from a shared secret to Okta
+client credentials. About 24 of the services build their discovery document as
+`https://$OKTA_DOMAIN/oauth2/$OKTA_AUTH_SERVER_ID` and exchange
+`OKTA_INTERNAL_CLIENT_ID` / `OKTA_INTERNAL_SECRET` for an `internalapi` token on every call.
+
+Leaving them blank still lets Phase 6 (infrastructure only) come up, but every cross-service call
+in the `platform` profile fails token acquisition — the symptom is a 401 from the *downstream*
+service and a token-endpoint error in Seq, not a startup crash.
+
+`INTERNAL_SERVICES_SECRET` cannot be dropped: `mavera-identity-server`, `mavera-news-manager` and
+`mavera-audit` build from `develop` (see `BRANCH_FALLBACK`) and still read the pre-Okta secret.
 
 ### Leave at the defaults
 
@@ -164,7 +181,9 @@ Paste the contents of `.env.example` into the **Environment** tab and fill in th
 | `COMPOSE_PARALLEL_LIMIT` | `2` | **29 concurrent `dotnet build` runs will OOM the VM.** The likeliest cause of a failed first deploy. |
 | `COMPOSE_PROFILES` | *(empty)* | empty = infrastructure only. Phase 6 relies on this. |
 | `MSSQL_MEMORY_LIMIT_MB` | `2048` | caps SQL Server so it cannot starve the 29 services. Raise to ~6144 on a 32 GB box once things are stable. |
-| `BRANCH` | `develop` | the branch built for all 29 service repos |
+| `BRANCH` | `release/v.be-2026-04-01` | the branch built for the 26 service repos that have it |
+| `BRANCH_FALLBACK` | `develop` | used by the three repos that have not cut that branch: `mavera-identity-server`, `mavera-news-manager`, `mavera-audit` |
+| `TAG` | `release-v.be-2026-04-01` | names the locally built images; Docker tags cannot contain `/` |
 
 ### Turn on env-file generation — this is the step that trips people up
 
@@ -497,6 +516,16 @@ as `admin` with `SEQ_ADMIN_PASS`.
 ## Ongoing
 
 - **Redeploys** rebuild only service repos whose branch head moved. Keep the build cache.
+- **Bumping to the next release branch**: set `BRANCH`, and first re-check which repos still need
+  `BRANCH_FALLBACK`. Anything listed has not cut the branch; anything that has dropped off the list
+  can move back onto `${BRANCH}` in `docker-compose.yml`:
+
+  ```bash
+  REL='release%2Fv.be-2026-04-01'   # url-encode the '/'
+  for r in $(grep -oE 'MaveraDSS/[a-z0-9-]+' docker-compose.yml | sort -u); do
+    gh api "repos/$r/branches/$REL" >/dev/null 2>&1 || echo "fallback: $r"
+  done
+  ```
 - **Webhooks**: Dokploy can auto-deploy on push to this repo. Note that it re-clones the compose repo,
   not the service repos — those are re-resolved by BuildKit at build time.
 - **Backups**: named volumes (`sqlserver-data`, `mongo-data`, `minio-data`, `rabbitmq-data`,
