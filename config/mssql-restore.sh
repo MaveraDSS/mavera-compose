@@ -3,13 +3,17 @@
 # Restore the data-bearing SQL Server databases from backups, idempotently.
 #
 # Runs inside mssql-init (which ships sqlcmd), against the `sqlserver` service.
-# The .bak files are read by the SERVER process, not by this container, so they
-# must be on a volume mounted into `sqlserver` -- see the `mssql-backups` volume
-# in docker-compose.yml.
+# The `mssql-backups` volume is mounted at the SAME path in both containers, and
+# both mounts are needed: this script globs the directory to find the backups,
+# and the server process is what actually opens them, so the paths that go into
+# the RESTORE statement have to resolve on both sides.
 #
 # For each database in $RESTORE_DATABASES:
 #   * find $BACKUP_DIR/<db>*.bak                  (missing -> skip, not an error)
-#   * skip if the database already exists         (unless SQL_RESTORE_FORCE=true)
+#   * restore if the database is absent, or exists but is an empty shell that
+#     00-init-databases.sql created on an earlier deploy (no user tables), or
+#     exists in a non-ONLINE state. A database with data is left alone unless
+#     SQL_RESTORE_FORCE=true.
 #   * read the logical file names with RESTORE FILELISTONLY and build one MOVE
 #     clause per file, because the backups carry Windows paths that do not
 #     exist on Linux and the logical names do NOT match the database names
@@ -72,17 +76,40 @@ restore_one() {
         return 0
     fi
 
-    exists="$(query_value "SELECT CASE WHEN DB_ID(N'$db_sql') IS NULL THEN 0 ELSE 1 END;")"
+    # -1 absent | 0 present but empty or not ONLINE | N present with N user tables.
+    # The empty case matters: 00-init-databases.sql creates these databases empty
+    # when no backup was available, so without it a backup added later would be
+    # skipped forever on the grounds that "the database already exists".
+    status="$(query_value "
+        DECLARE @db sysname = N'$db_sql';
+        IF DB_ID(@db) IS NULL
+            SELECT -1;
+        ELSE IF DATABASEPROPERTYEX(@db, 'Status') <> 'ONLINE'
+            SELECT 0;
+        ELSE
+        BEGIN
+            DECLARE @cnt int,
+                    @stmt nvarchar(max) = N'SELECT @c = COUNT(*) FROM '
+                                        + QUOTENAME(@db) + N'.sys.tables;';
+            EXEC sp_executesql @stmt, N'@c int OUTPUT', @c = @cnt OUTPUT;
+            SELECT @cnt;
+        END")"
 
     replace=''
-    if [ "$exists" = "1" ]; then
-        if [ "$FORCE" != "true" ]; then
-            echo "  [skip]    $db already exists - not restored"
-            return 0
-        fi
-        echo "  [REPLACE] $db exists and SQL_RESTORE_FORCE=true - overwriting"
-        replace=', REPLACE'
-    fi
+    case "$status" in
+        -1)
+            : ;;                       # absent: plain restore
+        0)
+            echo "  [empty]   $db exists but is empty - restoring over it"
+            replace=', REPLACE' ;;
+        *)
+            if [ "$FORCE" != "true" ]; then
+                echo "  [skip]    $db already exists with data ($status tables) - not restored"
+                return 0
+            fi
+            echo "  [REPLACE] $db has data and SQL_RESTORE_FORCE=true - overwriting"
+            replace=', REPLACE' ;;
+    esac
 
     echo "  [restore] $db  <-  $(basename "$bak")"
 

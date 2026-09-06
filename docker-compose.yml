@@ -318,8 +318,10 @@ services:
       MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
     volumes:
       - sqlserver-data:/var/opt/mssql
-      # RESTORE runs inside the server process, so the .bak files have to be
-      # on the server's own filesystem -- not on mssql-init's.
+      # RESTORE runs inside the server process, so the .bak files must be on
+      # the server's own filesystem. mssql-init mounts the same volume at the
+      # same path -- it enumerates the files, the server opens them, and the
+      # paths it puts in the RESTORE statement have to be valid for both.
       - mssql-backups:/var/opt/mssql/backups:ro
     healthcheck:
       test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null"]
@@ -390,6 +392,10 @@ services:
     volumes:
       - ./config/mssql-init:/init:ro
       - ./config/mssql-restore.sh:/mssql-restore.sh:ro
+      # Same path as in `sqlserver`, deliberately: mssql-restore.sh globs this
+      # directory for <db>*.bak and puts the paths it finds straight into the
+      # RESTORE statement the server executes.
+      - mssql-backups:/var/opt/mssql/backups:ro
     entrypoint:
       - /bin/sh
       - -c

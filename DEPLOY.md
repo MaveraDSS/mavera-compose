@@ -379,11 +379,14 @@ docker compose logs mssql-init
 #   [restore] vera-dev02  <-  vera-dev02-31JAN2024-cleaned.bak
 #   [ok]      vera-dev02 ONLINE (2 file(s) relocated to /var/opt/mssql/data)   ... x3
 #   [create]  MaveraInboxOutbox (empty)          ... x4
-#   [present] vera-dev02 (restored)              ... x3
+#   [restored] vera-dev02 (287 tables)           ... x3
 ```
 
-Three `[ok]` lines and three `[present]` lines mean Phase 7 is already done. `[MISSING]` instead means
-no matching backup was found — see Phase 7.
+Three `[ok]` lines and three `[restored]` lines mean Phase 7 is already done.
+
+`[create] vera-... (empty - no backup restored)` or `[empty]` instead means no matching backup was
+found: the database is created anyway so services start and EF migrations run, but anything that
+reads seeded data will fail. See Phase 7.
 
 ---
 
@@ -397,7 +400,7 @@ Their backups are committed to this repo as `Databases.zip`, and two containers 
 | Container | What it does |
 |---|---|
 | `mssql-backups-init` | Unpacks `Databases.zip` into the `mssql-backups` volume, which `sqlserver` mounts read-only at `/var/opt/mssql/backups`. Re-extracts only when the zip's checksum changes. |
-| `mssql-init` | Runs `config/mssql-restore.sh` **before** the catalog scripts: for each database, finds `<db>*.bak`, skips it if the database already exists, and otherwise restores it. |
+| `mssql-init` | Runs `config/mssql-restore.sh` **before** the catalog scripts: for each database, finds `<db>*.bak` and restores it unless the database already holds data. Mounts the same volume at the same path, because it is the one doing the globbing. |
 
 Two details the restore handles that a hand-written `RESTORE` usually gets wrong:
 
@@ -407,8 +410,14 @@ Two details the restore handles that a hand-written `RESTORE` usually gets wrong
   `RESTORE FILELISTONLY` rather than hardcoded — `vera-dev02`'s data file is logically `vera2`,
   and `vera-identity-dev02`'s is `vera-identity-test`.
 
-Because the restore is skip-if-exists, it is safe on every deploy: your data is never overwritten,
-and re-running it costs one `DB_ID()` check per database.
+Safe on every deploy: a database that already holds data is never overwritten, and re-running costs
+one query per database.
+
+**What happens when a backup is missing.** `00-init-databases.sql` runs straight after the restore
+and creates any of the seven databases that still do not exist, empty. So the stack always ends up
+with all seven: services start and EF migrations run, and only queries for seeded data fail. If you
+add the backup later, the restore picks it up — an empty database (no user tables) counts as
+restorable, so the shell created on an earlier deploy does not block it.
 
 ### Refreshing the data from a newer backup
 
@@ -431,7 +440,8 @@ docker compose up -d --force-recreate mssql-init && docker compose logs -f mssql
 
 | Symptom | Cause |
 |---|---|
-| `[skip] <db> - no backup matching <db>*.bak` | The zip does not contain a file whose name starts with that database name. |
+| `[skip] <db> - no backup matching <db>*.bak` | The zip does not contain a file whose name starts with that database name. The database is then created empty by the next step. |
+| `no backup directory at /var/opt/mssql/backups` | The `mssql-backups` volume is not mounted into `mssql-init`. Both it and `sqlserver` need it, at that same path. |
 | `no Databases.zip in the project directory` | The zip was not committed, or Dokploy cloned before it was pushed. |
 | `RESTORE ... could not be opened. Operating system error 5` | Permissions on the backup volume. `sqlserver` runs as root and mounts it read-only; check `docker compose exec sqlserver ls -la /var/opt/mssql/backups`. |
 | Restore runs on every deploy | `SQL_RESTORE_FORCE` was left at `true`. |

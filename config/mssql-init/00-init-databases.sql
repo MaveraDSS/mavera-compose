@@ -1,12 +1,18 @@
 /* ===========================================================================
    Idempotent SQL Server bootstrap.
 
-   Creates only the catalogs that are genuinely empty-by-design. The three
-   data-bearing databases are restored from backup by config/mssql-restore.sh,
-   which mssql-init runs immediately BEFORE this script -- so by the time this
-   runs they should already exist, and it only reports on them. It deliberately
-   does NOT create them: an empty database with one of those names would force
-   the restore to use WITH REPLACE.
+   Guarantees that all seven databases EXIST, so every service can connect and
+   the ones that carry EF migrations can build their own schema.
+
+   Four are empty by design. The other three are data-bearing and are restored
+   from backup by config/mssql-restore.sh, which mssql-init runs immediately
+   BEFORE this script; whatever it could not restore (no backup supplied, or
+   SQL_RESTORE_ENABLED=false) is created here as an empty database instead.
+
+   Ordering is what makes that safe: the restore has already had its chance, so
+   creating an empty database now cannot mask a backup. If a backup turns up on
+   a later deploy, mssql-restore.sh sees a database with no user tables and
+   restores over it.
 
    Safe to run on every `docker compose up`: existing databases are never
    touched, and nothing here drops, replaces or alters anything.
@@ -50,14 +56,14 @@ BEGIN
 END
 
 /* ---------------------------------------------------------------------------
-   2. Databases restored from backup. Reported here, never created.
+   2. Data-bearing databases. Restored by config/mssql-restore.sh just before
+      this script; created EMPTY here if that did not happen, so the database
+      always exists and services can at least connect and migrate.
 
-      config/mssql-restore.sh has already run at this point: it restores each
-      of these from Databases.zip if the database is not already present, so
-      [MISSING] here means no matching <db>*.bak was found (or the restore was
-      turned off with SQL_RESTORE_ENABLED=false).
-
-      See README "Restoring the data-bearing databases".
+      [restored] the restore populated it (it has user tables)
+      [empty]    it exists but has no tables -- no backup was supplied, so the
+                 services that expect data will fail on their first real query
+      [create]   it did not exist at all and was just created empty
    --------------------------------------------------------------------------- */
 DECLARE @expected TABLE (Ordinal int IDENTITY(1,1), DatabaseName sysname NOT NULL PRIMARY KEY, Placeholder varchar(64));
 
@@ -66,26 +72,43 @@ INSERT INTO @expected (DatabaseName, Placeholder) VALUES
     (N'vera-caregivers-dev02', 'ConnectionStrings_CaregiverContext_DB_Name'),
     (N'vera-identity-dev02',   'ConnectionString_DB_IdentityServer');
 
-DECLARE @missing int = 0, @ph varchar(64);
+DECLARE @unpopulated int = 0, @ph varchar(64), @tables int;
 SET @i = 1; SET @n = (SELECT COUNT(*) FROM @expected);
 
 WHILE @i <= @n
 BEGIN
     SELECT @db = DatabaseName, @ph = Placeholder FROM @expected WHERE Ordinal = @i;
 
-    IF DB_ID(@db) IS NOT NULL
-        RAISERROR('  [present] %s (restored)', 0, 1, @db) WITH NOWAIT;
+    IF DB_ID(@db) IS NULL
+    BEGIN
+        SET @unpopulated += 1;
+        RAISERROR('  [create]  %s (empty - no backup restored; $%s)', 0, 1, @db, @ph) WITH NOWAIT;
+        SET @sql = N'CREATE DATABASE ' + QUOTENAME(@db) + N';';
+        EXEC sp_executesql @sql;
+    END
     ELSE
     BEGIN
-        SET @missing += 1;
-        RAISERROR('  [MISSING] %s - no backup in Databases.zip, or repoint $%s', 0, 1, @db, @ph) WITH NOWAIT;
+        SET @tables = 0;
+        IF DATABASEPROPERTYEX(@db, 'Status') = 'ONLINE'
+        BEGIN
+            SET @sql = N'SELECT @c = COUNT(*) FROM ' + QUOTENAME(@db) + N'.sys.tables;';
+            EXEC sp_executesql @sql, N'@c int OUTPUT', @c = @tables OUTPUT;
+        END
+
+        IF @tables > 0
+            RAISERROR('  [restored] %s (%d tables)', 0, 1, @db, @tables) WITH NOWAIT;
+        ELSE
+        BEGIN
+            SET @unpopulated += 1;
+            RAISERROR('  [empty]   %s - exists but has no tables; no backup restored', 0, 1, @db) WITH NOWAIT;
+        END
     END
 
     SET @i += 1;
 END
 
-IF @missing > 0
-    RAISERROR('  NOTE: %d data-bearing database(s) missing. Services reading them will start but fail on their first query.', 0, 1, @missing) WITH NOWAIT;
+IF @unpopulated > 0
+    RAISERROR('  NOTE: %d data-bearing database(s) have no data. They exist, so services start and EF migrations run, but queries for seeded data will fail. Add the backups to Databases.zip and redeploy.', 0, 1, @unpopulated) WITH NOWAIT;
 GO
 
 PRINT '';

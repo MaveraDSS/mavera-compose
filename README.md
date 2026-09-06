@@ -254,8 +254,13 @@ MinIO console `9001`.
 ### 1. SQL databases
 
 SQL bootstrap is two steps, both idempotent and both run on every `docker compose up`:
-`config/mssql-restore.sh` **restores three data-bearing databases from backup**, then
-`config/mssql-init/00-init-databases.sql` **creates four empty catalogs** and reports on all seven.
+`config/mssql-restore.sh` **restores the three data-bearing databases from backup**, then
+`config/mssql-init/00-init-databases.sql` **makes sure all seven databases exist**, creating as an
+empty database anything the restore did not produce.
+
+So a deploy with no backups at all still ends with seven databases on the instance. That matters
+because a service whose database is *missing* cannot start its EF migration at all, whereas one
+whose database is merely *empty* migrates itself and builds its own schema.
 
 | Database | Handled by | Notes |
 |---|---|---|
@@ -263,28 +268,32 @@ SQL bootstrap is two steps, both idempotent and both run on every `docker compos
 | `MaveraScheduler` | created empty | Hangfire creates its own schema |
 | `MaveraStorageOperations` | created empty | `storage-service` |
 | `MaveraOcrOperations` | created empty | `mavera-ocr` |
-| `vera-dev02` | **restored from backup** | main catalog, `$ConnectionStrings_DB_Name` |
-| `vera-caregivers-dev02` | **restored from backup** | `$ConnectionStrings_CaregiverContext_DB_Name` |
-| `vera-identity-dev02` | **restored from backup** | `$ConnectionString_DB_IdentityServer` |
+| `vera-dev02` | **restored from backup**, else created empty | main catalog, `$ConnectionStrings_DB_Name` |
+| `vera-caregivers-dev02` | **restored from backup**, else created empty | `$ConnectionStrings_CaregiverContext_DB_Name` |
+| `vera-identity-dev02` | **restored from backup**, else created empty | `$ConnectionString_DB_IdentityServer` |
 
-The three data-bearing databases are deliberately never **created** empty — that would force the
-restore to use `WITH REPLACE`. They are restored, or reported missing:
+**Order is what makes this safe.** The restore runs first and has its chance at every data-bearing
+database; only then does the create-if-missing step run, so an empty `CREATE DATABASE` can never
+mask a backup. And because `mssql-restore.sh` treats *exists but has no user tables* as restorable,
+adding a backup later still works — the empty shell does not block it forever.
 
 ```
 restoring data-bearing databases from /var/opt/mssql/backups
   [restore] vera-dev02  <-  vera-dev02-31JAN2024-cleaned.bak
   [ok]      vera-dev02 ONLINE (2 file(s) relocated to /var/opt/mssql/data)
-  [skip]    vera-identity-dev02 already exists - not restored
+  [skip]    vera-caregivers-dev02 - no backup matching vera-caregivers-dev02*.bak
+  [skip]    vera-identity-dev02 already exists with data (312 tables) - not restored
 [create]  MaveraInboxOutbox (empty)
-[present] vera-dev02 (restored)
-[MISSING] vera-caregivers-dev02 - no backup in Databases.zip, or repoint $ConnectionStrings_CaregiverContext_DB_Name
-NOTE: 1 data-bearing database(s) missing. Services reading them will start but fail on their first query.
+[restored] vera-dev02 (287 tables)
+[create]  vera-caregivers-dev02 (empty - no backup restored; $ConnectionStrings_CaregiverContext_DB_Name)
+NOTE: 1 data-bearing database(s) have no data. They exist, so services start and EF migrations run,
+      but queries for seeded data will fail. Add the backups to Databases.zip and redeploy.
 ```
 
-A missing database is a **warning, not a failure** — the deploy still succeeds. A restore that is
-attempted and *fails*, however, is fatal: `mssql-init` exits non-zero so nothing starts on
-half-restored data. Existing databases are never touched unless you ask: no `DROP`, no `REPLACE`, no
-`ALTER`.
+An unpopulated database is a **warning, not a failure** — the deploy still succeeds. A restore that
+is attempted and *fails*, however, is fatal: `mssql-init` exits non-zero so nothing starts on
+half-restored data. A database that already holds data is never touched unless you ask: no `DROP`,
+no `REPLACE`, no `ALTER`.
 
 #### Restoring the data-bearing databases (automatic)
 
@@ -294,17 +303,25 @@ do it:
 ```
 Databases.zip  ──mssql-backups-init──▶  mssql-backups volume
                   (alpine, unzip)              │
-                                               ├─▶ sqlserver     :ro /var/opt/mssql/backups
-                                               └─▶ mssql-init ──▶ config/mssql-restore.sh
+                        :ro /var/opt/mssql/backups ─┬─▶ sqlserver   (opens the .bak)
+                                                   └─▶ mssql-init  (finds the .bak)
 ```
 
-`RESTORE` runs inside the SQL Server process, which is why the backups reach `sqlserver` on a shared
-volume rather than being copied into `mssql-init`.
+The `mssql-backups` volume is mounted at the **same path in both containers**, and both mounts are
+needed: `mssql-init` globs the directory to find the backups, and the `sqlserver` process is what
+actually opens them, so the paths that go into the `RESTORE` statement must resolve on both sides.
 
 For each of the three databases, `mssql-restore.sh`:
 
 1. finds the newest `<db>*.bak` in `/var/opt/mssql/backups`, and **skips** if there is none;
-2. **skips if the database already exists** — so redeploys cost one `DB_ID()` check each;
+2. decides what to do from the database's state — so redeploys cost one query each:
+
+   | State | Action |
+   |---|---|
+   | absent | restore |
+   | exists, no user tables (or not `ONLINE`) | restore `WITH REPLACE` — it is an empty shell |
+   | exists, has tables | **skip**, unless `SQL_RESTORE_FORCE=true` |
+
 3. reads the logical file names with `RESTORE FILELISTONLY` and builds one `MOVE` clause per file.
 
 Step 3 is the part worth knowing about. `MOVE` is mandatory because the backups carry Windows paths
@@ -534,7 +551,7 @@ COMPOSE_PROFILES=platform docker compose up -d && docker compose ps
 | `Databases.zip` | Backups of the three data-bearing SQL databases, restored on first deploy |
 | `config/entrypoint.sh` | envsubst wrapper, mounted into all 29 |
 | `config/otel-collector.yaml` | OTLP gRPC → Seq |
-| `config/mssql-restore.sh` | Restores the three data-bearing databases, skip-if-exists |
+| `config/mssql-restore.sh` | Restores the three data-bearing databases; leaves a populated one alone |
 | `config/mssql-init/00-init-databases.sql` | The 4 empty SQL catalogs, and a report on all 7 |
 | `config/mongo-init.js` | App user + 11 Mongo databases |
 | `config/minio-init.sh` | Buckets |
