@@ -318,6 +318,9 @@ services:
       MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
     volumes:
       - sqlserver-data:/var/opt/mssql
+      # RESTORE runs inside the server process, so the .bak files have to be
+      # on the server's own filesystem -- not on mssql-init's.
+      - mssql-backups:/var/opt/mssql/backups:ro
     healthcheck:
       test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null"]
       interval: 10s
@@ -326,7 +329,46 @@ services:
       start_period: 60s
     networks: [mavera]
 
-  # Creates the seven catalogs, then exits. NOTE: creates EMPTY databases only —
+  # Unpacks Databases.zip into the shared backup volume so `sqlserver` can
+  # RESTORE from it. Committing the zip rather than the three .bak files keeps
+  # the repo under GitHub's 100 MB per-file limit (the two large backups are
+  # ~145 MB each uncompressed) and matches .gitignore, which excludes *.bak.
+  #
+  # Alpine is used for its busybox `unzip`; the SQL Server image has none.
+  # Re-extracts only when the zip changes, so redeploys cost one checksum.
+  mssql-backups-init:
+    image: alpine:3
+    restart: "no"
+    volumes:
+      - ./Databases.zip:/src/Databases.zip:ro
+      - mssql-backups:/backups
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        # Absent (or a directory, which is what Compose creates for a missing
+        # bind-mount source) means "no backups supplied" -- deploy anyway, and
+        # let 00-init-databases.sql report the databases as [MISSING].
+        if [ ! -f /src/Databases.zip ]; then
+          echo "no Databases.zip in the project directory - nothing to extract"
+          exit 0
+        fi
+        stamp=$$(md5sum /src/Databases.zip | cut -d' ' -f1)
+        if [ -f /backups/.stamp ] && [ "$$(cat /backups/.stamp)" = "$$stamp" ]; then
+          echo "backups already extracted ($$stamp)"
+          ls -la /backups/*.bak 2>/dev/null || true
+          exit 0
+        fi
+        echo "extracting Databases.zip ($$stamp)"
+        rm -f /backups/*.bak /backups/.stamp
+        unzip -o -j /src/Databases.zip '*.bak' -d /backups
+        echo "$$stamp" > /backups/.stamp
+        ls -la /backups/*.bak
+    networks: [mavera]
+
+  # Restores the data-bearing databases, then creates the empty catalogs.
+  # NOTE: the catalogs it creates are EMPTY —
   # see README "SQL schema is not solved by compose".
   # Reuses the server image: it already ships /opt/mssql-tools18/bin/sqlcmd, so
   # there is no second image to pull and the client version always matches the
@@ -338,11 +380,16 @@ services:
     restart: "no"
     depends_on:
       sqlserver: { condition: service_healthy }
+      mssql-backups-init: { condition: service_completed_successfully }
     environment:
       DB_PASS: ${DB_PASS:?DB_PASS is not set}
       MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
+      SQL_RESTORE_ENABLED: ${SQL_RESTORE_ENABLED:-true}
+      # DESTRUCTIVE: true re-restores over the live databases on every deploy.
+      SQL_RESTORE_FORCE: ${SQL_RESTORE_FORCE:-false}
     volumes:
       - ./config/mssql-init:/init:ro
+      - ./config/mssql-restore.sh:/mssql-restore.sh:ro
     entrypoint:
       - /bin/sh
       - -c
@@ -356,6 +403,9 @@ services:
             EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
             EXEC sp_configure 'max server memory (MB)', $$MSSQL_MEMORY_LIMIT_MB; RECONFIGURE;"
         fi
+        # Restore first: 00-init-databases.sql then reports the data-bearing
+        # databases as [present] rather than [MISSING], so one log confirms both.
+        /bin/sh /mssql-restore.sh
         for f in /init/*.sql; do
           echo "applying $$f"
           /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U sa -P "$$DB_PASS" -b -i "$$f"
@@ -1118,6 +1168,10 @@ networks:
 
 volumes:
   sqlserver-data:
+  # Extracted .bak files. ~300 MB, kept after restore so a re-restore (or a
+  # rebuilt sqlserver-data volume) does not need the zip unpacked again.
+  # Reclaim with: docker volume rm mavera_mssql-backups
+  mssql-backups:
   redis-data:
   rabbitmq-data:
   mongo-data:

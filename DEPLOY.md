@@ -18,7 +18,7 @@ setup mistake:
 - A DNS zone you can add records to (for the gateway domain).
 - A GitHub account with read access to the 29 `MaveraDSS/*` service repos.
 - SQL Server `.bak` files for `vera-dev02`, `vera-caregivers-dev02`, `vera-identity-dev02`
-  (Phase 7 — the stack deploys without them, services just fail on first query).
+  (Phase 7 — restored automatically from `Databases.zip` in this repo).
 
 ---
 
@@ -181,6 +181,8 @@ service and a token-endpoint error in Seq, not a startup crash.
 | `COMPOSE_PARALLEL_LIMIT` | `2` | **29 concurrent `dotnet build` runs will OOM the VM.** The likeliest cause of a failed first deploy. |
 | `COMPOSE_PROFILES` | *(empty)* | empty = infrastructure only. Phase 6 relies on this. |
 | `MSSQL_MEMORY_LIMIT_MB` | `2048` | caps SQL Server so it cannot starve the 29 services. Raise to ~6144 on a 32 GB box once things are stable. |
+| `SQL_RESTORE_ENABLED` | `true` | restores the three data-bearing databases from `Databases.zip` on first deploy (Phase 7) |
+| `SQL_RESTORE_FORCE` | `false` | **destructive.** `true` re-restores over the live databases on every deploy |
 | `BRANCH` | `release/v.be-2026-04-01` | the branch built for the 26 service repos that have it |
 | `BRANCH_FALLBACK` | `develop` | used by the three repos that have not cut that branch: `mavera-identity-server`, `mavera-news-manager`, `mavera-audit` |
 | `TAG` | `release-v.be-2026-04-01` | names the locally built images; Docker tags cannot contain `/` |
@@ -346,8 +348,10 @@ on them will not work; OCR and PDF generation in particular need a valid Apryse 
 
 ## Phase 6 — First deploy: infrastructure only
 
-With `COMPOSE_PROFILES` empty, press **Deploy**. This starts 8 containers and 3 init jobs and builds
-nothing, so it should finish in a couple of minutes.
+With `COMPOSE_PROFILES` empty, press **Deploy**. This starts 8 containers and 4 init jobs and builds
+nothing. Budget **5–10 minutes** on the first deploy: `mssql-backups-init` unpacks ~300 MB of backups
+and `mssql-init` restores all three databases before it exits. Later deploys skip both and take a
+couple of minutes.
 
 Expected result — via SSH on the VM:
 
@@ -360,56 +364,82 @@ docker compose ps
 |---|---|
 | `sqlserver`, `mongo`, `rabbitmq`, `redis`, `minio` | `Up (healthy)` |
 | `seq`, `otel-collector`, `gotenberg` | `Up` |
-| `mssql-init`, `mongo-init`, `minio-init` | `Exited (0)` |
+| `mssql-backups-init`, `mssql-init`, `mongo-init`, `minio-init` | `Exited (0)` |
 
 Check the bootstrap output:
 
 ```bash
+docker compose logs mssql-backups-init
+#   extracting Databases.zip (a1b2c3...)
+#   -rw-r--r--  vera-dev02-31JAN2024-cleaned.bak      ... x3
+
 docker compose logs mssql-init
 #   capping max server memory at 2048 MB
+#   restoring data-bearing databases from /var/opt/mssql/backups
+#   [restore] vera-dev02  <-  vera-dev02-31JAN2024-cleaned.bak
+#   [ok]      vera-dev02 ONLINE (2 file(s) relocated to /var/opt/mssql/data)   ... x3
 #   [create]  MaveraInboxOutbox (empty)          ... x4
-#   [MISSING] vera-dev02 - restore it manually   ... x3   <- expected at this point
+#   [present] vera-dev02 (restored)              ... x3
 ```
 
-`[MISSING]` is a warning, not a failure. Fix it in the next phase.
+Three `[ok]` lines and three `[present]` lines mean Phase 7 is already done. `[MISSING]` instead means
+no matching backup was found — see Phase 7.
 
 ---
 
-## Phase 7 — Restore the SQL databases (one-off)
+## Phase 7 — The SQL databases (automatic)
 
-Three databases hold real data and are restored by hand, once. The init script deliberately never
-creates them, so your `RESTORE` does not need `WITH REPLACE`.
+Nothing to do here on a normal deploy. This phase is reference material for when it goes wrong.
 
-`RESTORE` runs inside the SQL Server process, so the file must be inside that container.
+Three databases hold real data: `vera-dev02`, `vera-caregivers-dev02` and `vera-identity-dev02`.
+Their backups are committed to this repo as `Databases.zip`, and two containers restore them for you:
+
+| Container | What it does |
+|---|---|
+| `mssql-backups-init` | Unpacks `Databases.zip` into the `mssql-backups` volume, which `sqlserver` mounts read-only at `/var/opt/mssql/backups`. Re-extracts only when the zip's checksum changes. |
+| `mssql-init` | Runs `config/mssql-restore.sh` **before** the catalog scripts: for each database, finds `<db>*.bak`, skips it if the database already exists, and otherwise restores it. |
+
+Two details the restore handles that a hand-written `RESTORE` usually gets wrong:
+
+- **Every file is relocated with `MOVE`.** The backups carry Windows paths
+  (`C:\Program Files\...`) that do not exist on Linux, so a plain `RESTORE` fails.
+- **Logical names do not match the database names**, and are read at restore time with
+  `RESTORE FILELISTONLY` rather than hardcoded — `vera-dev02`'s data file is logically `vera2`,
+  and `vera-identity-dev02`'s is `vera-identity-test`.
+
+Because the restore is skip-if-exists, it is safe on every deploy: your data is never overwritten,
+and re-running it costs one `DB_ID()` check per database.
+
+### Refreshing the data from a newer backup
+
+Replace `Databases.zip`, push, then set `SQL_RESTORE_FORCE=true` for one deploy and set it back to
+`false` afterwards. **This is destructive** — it restores `WITH REPLACE` over the live databases,
+discarding anything written since.
+
+Backups from SQL Server 2019 restore cleanly onto this 2022 image. Keep the original database names,
+so any 3-part reference inside the data (views, procs, synonyms) keeps resolving.
+
+### If a restore fails
+
+A failed restore is deliberately fatal: `mssql-init` exits non-zero and no service starts on
+half-restored data. Read the log, fix the cause, then re-run just that container:
 
 ```bash
-# 1. copy the backup onto the VM, then into the container
-scp mybackup.bak ubuntu@<vm-ip>:/tmp/
-docker compose cp /tmp/mybackup.bak sqlserver:/var/opt/mssql/data/
-
-# 2. read the LOGICAL file names — they do NOT match the database name
-#    (vera-dev02's data file is logically "vera2"; vera-identity-dev02's is "vera-identity-test")
-docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$DB_PASS" \
-  -Q "RESTORE FILELISTONLY FROM DISK='/var/opt/mssql/data/mybackup.bak'"
-
-# 3. restore, relocating every file with MOVE (mandatory: the backups carry
-#    Windows paths like C:\Program Files\... that do not exist on Linux)
-docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$DB_PASS" -b \
-  -Q "RESTORE DATABASE [vera-dev02] FROM DISK='/var/opt/mssql/data/mybackup.bak' WITH RECOVERY, STATS=25,
-       MOVE 'vera2'     TO '/var/opt/mssql/data/vera-dev02_1.mdf',
-       MOVE 'vera2_log' TO '/var/opt/mssql/data/vera-dev02_2.ldf'"
-
-# 4. clean up, repeat for the other two, then confirm
-docker compose exec sqlserver rm /var/opt/mssql/data/mybackup.bak
-docker compose up -d --force-recreate mssql-init && docker compose logs mssql-init
-#   [present] vera-dev02 (restored)   x3
+docker compose logs mssql-init
+docker compose up -d --force-recreate mssql-init && docker compose logs -f mssql-init
 ```
 
-Restore under the **original** names so any 3-part reference inside the data (views, procs, synonyms)
-keeps resolving. Backups from SQL Server 2019 restore cleanly onto this 2022 image.
+| Symptom | Cause |
+|---|---|
+| `[skip] <db> - no backup matching <db>*.bak` | The zip does not contain a file whose name starts with that database name. |
+| `no Databases.zip in the project directory` | The zip was not committed, or Dokploy cloned before it was pushed. |
+| `RESTORE ... could not be opened. Operating system error 5` | Permissions on the backup volume. `sqlserver` runs as root and mounts it read-only; check `docker compose exec sqlserver ls -la /var/opt/mssql/backups`. |
+| Restore runs on every deploy | `SQL_RESTORE_FORCE` was left at `true`. |
 
-If you would rather point at an existing dev SQL instance, set `DB_SERVER` to its hostname instead and
-skip this phase entirely.
+### Using an existing SQL instance instead
+
+Point `DB_SERVER` at its hostname and set `SQL_RESTORE_ENABLED=false`. The restore is skipped and
+nothing is written to that instance.
 
 ---
 
@@ -506,7 +536,8 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | Stack comes up on `localhost` with dev passwords | You are on an older revision of this file that still had `${VAR:-default}` fallbacks. Pull the current one. |
 | Login redirects fail, or `iss` mismatch | `PUBLIC_SCHEME` does not match how clients reach the server, or `IDENTITY_HOST` changed (use an Elastic IP). |
 | Gateway and identity server serve each other's responses | `GATEWAY_HOST` and `IDENTITY_HOST` are the same value; the two Traefik routers collide. |
-| `Invalid object name 'dbo.X'` | The database is empty — Phase 7 not done, or `DB_SERVER` points somewhere unpopulated. |
+| `Invalid object name 'dbo.X'` | The database is empty — the restore was skipped or `DB_SERVER` points somewhere unpopulated. Check `docker compose logs mssql-init` for `[ok]`/`[MISSING]`. |
+| `mssql-init` exits non-zero on a restore | Deliberate: nothing starts on half-restored data. See Phase 7, *If a restore fails*. |
 | Deploy stalls on `Pulling … unauthorized` | `pull_policy: build` was removed from `x-service-base`; Compose is trying ACR instead of building. |
 | SQL Server eating all RAM | `MSSQL_MEMORY_LIMIT_MB` only applies at first-run setup; `mssql-init` re-applies it via `sp_configure` on every run — re-run it. |
 | `storage-service` / `mavera-ocr` fail on queries | `MaveraStorageOperations` / `MaveraOcrOperations` are empty; no backup was supplied for them. |

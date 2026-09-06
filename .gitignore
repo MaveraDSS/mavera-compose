@@ -1,2 +1,4 @@
 .env
 *.bak
+# Databases.zip IS committed; a local unzip of it is not.
+Databases/

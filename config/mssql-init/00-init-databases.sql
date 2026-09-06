@@ -2,10 +2,11 @@
    Idempotent SQL Server bootstrap.
 
    Creates only the catalogs that are genuinely empty-by-design. The three
-   data-bearing databases are restored MANUALLY, once, by an operator -- this
-   script deliberately does NOT create them, because creating an empty
-   database with one of those names would force the manual RESTORE to use
-   WITH REPLACE. It only reports whether they are present.
+   data-bearing databases are restored from backup by config/mssql-restore.sh,
+   which mssql-init runs immediately BEFORE this script -- so by the time this
+   runs they should already exist, and it only reports on them. It deliberately
+   does NOT create them: an empty database with one of those names would force
+   the restore to use WITH REPLACE.
 
    Safe to run on every `docker compose up`: existing databases are never
    touched, and nothing here drops, replaces or alters anything.
@@ -49,17 +50,14 @@ BEGIN
 END
 
 /* ---------------------------------------------------------------------------
-   2. Databases restored manually by an operator. Reported, never created.
+   2. Databases restored from backup. Reported here, never created.
 
-      Restore them once with something like:
+      config/mssql-restore.sh has already run at this point: it restores each
+      of these from Databases.zip if the database is not already present, so
+      [MISSING] here means no matching <db>*.bak was found (or the restore was
+      turned off with SQL_RESTORE_ENABLED=false).
 
-        docker compose cp <file>.bak sqlserver:/var/opt/mssql/data/
-        docker compose exec sqlserver /opt/mssql-tools18/bin/sqlcmd \
-          -C -S localhost -U sa -P "$DB_PASS" -Q "RESTORE FILELISTONLY FROM DISK='/var/opt/mssql/data/<file>.bak'"
-        -- then RESTORE ... WITH MOVE, using the logical names from that output.
-
-      See README "Restoring the data-bearing databases" for the full recipe;
-      MOVE is required because the backups carry Windows file paths.
+      See README "Restoring the data-bearing databases".
    --------------------------------------------------------------------------- */
 DECLARE @expected TABLE (Ordinal int IDENTITY(1,1), DatabaseName sysname NOT NULL PRIMARY KEY, Placeholder varchar(64));
 
@@ -80,7 +78,7 @@ BEGIN
     ELSE
     BEGIN
         SET @missing += 1;
-        RAISERROR('  [MISSING] %s - restore it manually, or repoint $%s', 0, 1, @db, @ph) WITH NOWAIT;
+        RAISERROR('  [MISSING] %s - no backup in Databases.zip, or repoint $%s', 0, 1, @db, @ph) WITH NOWAIT;
     END
 
     SET @i += 1;
