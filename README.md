@@ -249,6 +249,119 @@ MinIO console `9001`.
 
 ---
 
+## Reaching the services
+
+Only two containers carry Traefik labels, so only two hostnames exist:
+
+| Hostname | Container | What it is |
+|---|---|---|
+| `GATEWAY_HOST` | `mavera-libertine` | YARP gateway — the API surface for every routed service |
+| `IDENTITY_HOST` | `mavera-identity-server` | OIDC issuer; where tokens come from |
+
+The other 27 services publish no host ports. They are reachable only through the gateway, or
+service-to-service on the compose network.
+
+### The route table
+
+Everything the gateway serves lives under a `/libertine/` prefix:
+
+```
+$PUBLIC_SCHEME://$GATEWAY_HOST/libertine/...
+```
+
+Every route rewrites the path with a YARP `PathPattern` transform, so the path the target service
+receives is not the one you requested. Both are listed here — the *Rewritten to* column is what shows
+up in that service's logs, and is the path its own OpenAPI document describes.
+
+This table is generated from `ReverseProxy` in `LibertineWeb/appsettings.json`. If a route changes
+upstream, this goes stale — regenerate it from that file rather than trusting it blindly.
+
+| Request path | Method | Target | Rewritten to |
+|---|---|---|---|
+| `/libertine/evaluation/list` | **GET** | `mavera-evaluation-service` | `Vera/EvaluationService/Evaluation/pagedList` |
+| `/libertine/evaluation/send` | **POST** | `mavera-evaluation-service` | `Vera/EvaluationService/Assign/send` |
+| `/libertine/evaluation/share` | **PUT** | `mavera-evaluation-service` | `Vera/EvaluationService/ShareEvaluation` |
+| `/libertine/evaluation/sign` | **POST** | `mavera-evaluation-service` | `Vera/EvaluationService/Evaluation/signEvaluation` |
+| `/libertine/evaluation/{evaluationId}/message` | **POST** | `mavera-evaluation-service` | `Vera/EvaluationService/message` |
+| `/libertine/evaluation/{evaluationId}/messages` | **GET** | `mavera-evaluation-service` | `Vera/EvaluationService/message/{evaluationId}` |
+| `/libertine/evaluation/{evaluationId}/note` | **POST** | `mavera-evaluation-service` | `Vera/EvaluationService/Note` |
+| `/libertine/evaluation/{evaluationId}/notes` | **GET** | `mavera-evaluation-service` | `Vera/EvaluationService/Note/{evaluationId}` |
+| `/libertine/evaluation/{evaluationId}/questions` | **GET** | `mavera-evaluation-service` | `Vera/EvaluationService/EvaluationQuestion/{evaluationId}/questions` |
+| `/libertine/EvaluationService/{**catch-all}` | any | `mavera-evaluation-service` | `Vera/EvaluationService/{**catch-all}` |
+| `/libertine/case/{**catch-all}` | any | `mavera-evaluation-service` | `Vera/EvaluationService/maveracase/{**catch-all}` |
+| `/libertine/evaluation/{**catch-all}` | any | `mavera-evaluation-service` | `Vera/EvaluationService/Evaluation/{**catch-all}` |
+| `/libertine/EvaluationDocument/documentType` | **GET** | `mavera-document-service` | `Vera/DocumentService/EvaluationDocument/documentType` |
+| `/libertine/DocumentService/{**catch-all}` | any | `mavera-document-service` | `Vera/DocumentService/{**catch-all}` |
+| `/libertine/companyadmin/{**catch-all}` | any | `mavera-user-service` | `Vera/UserService/companyadmin/{**catch-all}` |
+| `/libertine/user/{**catch-all}` | **PATCH, PUT** | `mavera-user-service` | `Vera/UserService/user/{**catch-all}` |
+| `/libertine/caregivers/{**catch-all}` | any | `mavera-caregivers` | `caregivers/{**catch-all}` |
+| `/libertine/evaluationcaregiver/{**catch-all}` | any | `mavera-caregivers` | `caregivers/evaluationcaregiver/{**catch-all}` |
+| `/libertine/ai/documentclassifier` | **GET** | `mavera-ai-document-classifier` | `api/documentclassifier/query` |
+| `/libertine/ai/documentclassifier/{evaluationId}` | **GET** | `mavera-ai-document-classifier` | `api/documentclassifier/query/{evaluationId}` |
+| `/libertine/ai/{**catch-all}` | any | `mavera-ai-document-processor` | `api/documentprocessor/{**catch-all}` |
+| `/libertine/evaluation/{evaluationId}/timeline` | **GET** | `mavera-ai-timeline` | `api/timeline/evaluation/{evaluationId}` |
+| `/libertine/timeline/evaluation/documentEvents/{documentId}` | **GET** | `mavera-ai-timeline` | `api/timeline/evaluation/documentEvents/{documentId}` |
+| `/libertine/timeline/{evaluationId}/status` | **GET** | `mavera-ai-timeline` | `api/timeline/{evaluationId}/status` |
+| `/libertine/document-summaries/{**catch-all}` | any | `mavera-ai-document-summaries` | `documentSummaries/{**catch-all}` |
+| `/libertine/IdentityCheck/{**catch-all}` | any | `mavera-ai-identitycheck-processor` | `IdentityCheck/{**catch-all}` |
+| `/libertine/OCRService/{**catch-all}` | any | `mavera-ocr` | `OCRService/{**catch-all}` |
+| `/libertine/pdf-generator/{**catch-all}` | any | `mavera-pdf-generator-service` | `pdf/{**catch-all}` |
+| `/libertine/enhanced-patient-view/{**catch-all}` | any | `mavera-enhanced-patient-view` | `enhanced-patient-view/{**catch-all}` |
+| `/libertine/fkassan/{**catch-all}` | any | `mavera-fkassan-service` | `fkassan/{**catch-all}` |
+| `/libertine/audit-logs/{**catch-all}` | any | `mavera-audit` | `audit-logs/{**catch-all}` |
+| `/libertine/identity-client/{**catch-all}` | any | `mavera-identity-client` | `identity-client/{**catch-all}` |
+
+Where an explicit route and a catch-all both match, YARP picks the more specific one, so
+`/libertine/evaluation/list` reaches `Evaluation/pagedList` rather than the `evaluation/**`
+catch-all.
+
+### Expect 401 before you expect 200
+
+No route carries an `AuthorizationPolicy`, so the gateway forwards anything it can match. The
+*target* service is what validates the bearer token — on `release/v.be-2026-04-01` its
+`SecuritySettings` accepts audiences `api` and `internalapi`, with the identity server as authority
+alongside `OktaAuthority`.
+
+```bash
+# 401 from evaluation-service -- which means the gateway and the route both worked
+curl -i "http://$GATEWAY_HOST/libertine/evaluation/list"
+
+# with a token
+curl -i -H "Authorization: Bearer $TOKEN" "http://$GATEWAY_HOST/libertine/evaluation/list"
+```
+
+Read the two failure modes differently:
+
+| Response | Meaning |
+|---|---|
+| `401` | Route matched, request reached the service, token missing or rejected |
+| `404` | **No route matched.** Check the prefix and the method — `/libertine/user/**` accepts only PATCH and PUT |
+| `502` / `503` | Route matched but the target container is down or has lost its network alias |
+
+### Two routes that cannot work here
+
+| Route | Why |
+|---|---|
+| `/libertine/pdf-search/**` | Its cluster address is hardcoded to an ngrok URL (`mavera.ngrok.pdfsearch.app.ngrok.pizza`), not a placeholder — there is nothing in this stack to point it at. |
+| `/libertine/idp2/**` | Resolves `$ServiceSettings_Services_Idp2`, which defaults to `not-configured`. Set `AI_IDP2_HOST` to a reachable host to use it. |
+
+### Services with no gateway route
+
+`mavera-ai-client-relevance-score`, `mavera-ai-document-anonymize`, `mavera-ai-journalevents-classifier`, `mavera-background-task-schduler`, `mavera-dashboard`, `mavera-file-conversion-service`, `mavera-kuralink`, `mavera-medical-advisor-network`, `mavera-news-manager`, `mavera-notification-service`, `mavera-reflection`, `mavera-storage-service`.
+
+These are called service-to-service only. To reach one directly — for a health check or while
+debugging — use the compose network rather than the gateway:
+
+```bash
+docker compose exec mavera-libertine \
+  curl -s http://mavera-storage-service.svc.cluster.local/api/Storage/health
+```
+
+Health endpoints are internal paths, and only some happen to sit under a gateway route:
+`/libertine/caregivers/health` and `/libertine/EvaluationService/health` resolve, but user-service's
+`Vera/UserService/health` has no matching route. Use the `exec` form above for health checks; the
+per-service paths are in the profile tables above.
+
 ## Things you need to know
 
 ### 1. SQL databases
