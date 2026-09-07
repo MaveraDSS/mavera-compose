@@ -43,7 +43,7 @@ name: mavera
 # -----------------------------------------------------------------------------
 # The complete placeholder set. envsubst blanks any variable it cannot resolve,
 # so every token appearing in any of the 29 appsettings.json files is listed
-# here — 165 in total.
+# here — 169 in total.
 # -----------------------------------------------------------------------------
 x-placeholders: &placeholders
   ASPNETCORE_ENVIRONMENT: Production          # matches the k8s overlays; no appsettings.Production.json exists in any repo
@@ -118,6 +118,7 @@ x-placeholders: &placeholders
   ServiceSettings_Services_Audit: mavera-audit
   ServiceSettings_Services_Caregivers: mavera-caregivers
   ServiceSettings_Services_Client_Relevance_Score: mavera-ai-client-relevance-score
+  ServiceSettings_Services_Dashboard: mavera-dashboard
   ServiceSettings_Services_DocumentClassifier: mavera-ai-document-classifier
   ServiceSettings_Services_DocumentManagement: mavera-document-service
   ServiceSettings_Services_DocumentProcessor: mavera-ai-document-processor
@@ -132,6 +133,7 @@ x-placeholders: &placeholders
   ServiceSettings_Services_JournalEventsClassifier: mavera-ai-journalevents-classifier
   ServiceSettings_Services_Kuralink: mavera-kuralink
   ServiceSettings_Services_MedicalAdvisorsNetwork: mavera-medical-advisor-network
+  ServiceSettings_Services_NewsManager: mavera-news-manager
   ServiceSettings_Services_OcrService: mavera-ocr
   ServiceSettings_Services_PdfGenerator: mavera-pdf-generator-service
   ServiceSettings_Services_StorageService: mavera-storage-service
