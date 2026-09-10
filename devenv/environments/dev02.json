@@ -1,0 +1,25 @@
+{
+  "_comment": "Where the remote side of the setup lives. No secrets here: client ids and hostnames only. Values verified 2026-09-10 (DSS-5583 comments).",
+  "name": "dev02",
+  "publicBaseUrl": "https://dev02.test.mavera.claims.verisk.com",
+  "internalBaseUrl": "https://dev02-internal.test.mavera.claims.verisk.com",
+  "identityAuthority": "https://dev02.test.mavera.claims.verisk.com",
+  "okta": {
+    "authority": "https://sso.int.verisk.com/oauth2/aus2ta01bgqyH6hHq0h8",
+    "audience": "vnordics-dev02aws-dss",
+    "audiences": "api,internalapi,internalservices",
+    "internalClientId": "0oa2ta051fvbwMCpr0h8",
+    "frontendClientId": "0oa2ta051dgJQg8jd0h8"
+  },
+  "sql": {
+    "host": "mssql-internal.test.mavera.claims.verisk.com",
+    "database": "vera-dev02"
+  },
+  "frontend": {
+    "NEXT_PUBLIC_ROPC_CLIENT": "ropc_client",
+    "NEXT_PUBLIC_SMB_SETTINGS_SHARE": "stage",
+    "MONGO_BRIDGE_API_URL": "https://mongodb-news.test.mavera.claims.verisk.com"
+  },
+  "connectivityCheckUrl": "https://dev02.test.mavera.claims.verisk.com/.well-known/openid-configuration",
+  "notes": "Reachable only with Zscaler connected. Each environment has its own Okta authorization server (vnordics-<env>-dss) and its own internal-services client; the legacy server aus2oxv9rn64WrLLi0h8 is rejected here."
+}

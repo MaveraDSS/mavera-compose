@@ -2,3 +2,11 @@
 *.bak
 # Databases.zip IS committed; a local unzip of it is not.
 Databases/
+
+# devenv (local development tooling, DSS-5585)
+devenv/secrets.json
+devenv/devenv.local.json
+devenv/.state/
+devenv/**/bin/
+devenv/**/obj/
+devenv/**/TestResults/
