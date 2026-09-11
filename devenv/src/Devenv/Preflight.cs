@@ -42,9 +42,9 @@ public static class Preflight
                     ? new PreflightResult($"{s.Name} x64 host", true, x64)
                     : new PreflightResult($"{s.Name} x64 host", false, $"{s.Name} carries x64-only assemblies and this is an arm64 machine; install the x64 .NET SDK side by side (expected at {x64}) or set dotnetX64 in devenv.local.json"));
             }
-            if (s.SendsMail)
+            if (s.SendsMail && !ws.Options.AllowMail)
             {
-                results.Add(new PreflightResult($"{s.Name} mail", false, "sends real mail; running it locally is not supported until DSS-5587 adds a mail sink"));
+                results.Add(new PreflightResult($"{s.Name} mail", false, "sends mail; pass --allow-mail (every message then goes to MAIL_TEST_ADDRESS from secrets.json)"));
             }
         }
 
@@ -53,13 +53,18 @@ public static class Preflight
             : new PreflightResult("secrets", false, $"copy secrets.example.json to secrets.json and fill it (README)"));
 
         results.Add(await ConnectivityCheckAsync(ws.Environment));
+        if (ws.LocalServices.Count > 0 && !ws.LocalDatabase)
+        {
+            results.Add(await SqlReachableAsync(ws.Environment));
+        }
 
         if (includePorts && ws.Local.Infra)
         {
             // A RabbitMQ or Redis installed on the host (brew services, a Windows service) sits on the same
             // ports as the containers; the service would then talk to it with the wrong credentials.
             var running = await Infra.RunningAsync(ws) ?? Array.Empty<string>();
-            foreach (var (service, ports) in Infra.PublishedPorts)
+            var wanted = ws.LocalDatabase ? Infra.PublishedPorts.Concat(Infra.DatabasePorts) : Infra.PublishedPorts;
+            foreach (var (service, ports) in wanted)
             {
                 if (running.Contains(service, StringComparer.OrdinalIgnoreCase)) continue;
                 foreach (var port in ports)
@@ -154,6 +159,26 @@ public static class Preflight
     }
 
     /// <summary>A port is "in use" when something accepts connections on it; binding tests give false negatives when the listener is on all interfaces.</summary>
+    /// <summary>The remote SQL Server on 1433: the second thing (after the discovery document) that only answers with Zscaler connected.</summary>
+    private static async Task<PreflightResult> SqlReachableAsync(EnvironmentSpec env)
+    {
+        if (string.IsNullOrWhiteSpace(env.Sql.Host))
+        {
+            return new PreflightResult("remote sql", true, "no SQL host configured");
+        }
+        try
+        {
+            using var client = new TcpClient();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            await client.ConnectAsync(env.Sql.Host, 1433, cts.Token);
+            return new PreflightResult("remote sql", true, $"{env.Sql.Host}:1433 reachable");
+        }
+        catch (Exception ex)
+        {
+            return new PreflightResult("remote sql", false, $"cannot reach {env.Sql.Host}:1433 ({ex.GetType().Name}); connect Zscaler, or use --db local");
+        }
+    }
+
     private static PreflightResult PortCheck(string name, int port)
     {
         foreach (var address in new[] { IPAddress.Loopback, IPAddress.IPv6Loopback })

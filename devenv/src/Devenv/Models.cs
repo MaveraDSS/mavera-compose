@@ -48,6 +48,8 @@ public sealed class Manifest
     public GatewaySpec Gateway { get; set; } = new();
     public List<ServiceSpec> Services { get; set; } = new();
     public PlaceholderSpec Placeholders { get; set; } = new();
+    /// <summary>Prefix for cloning missing repos: gitBase + repo + ".git".</summary>
+    public string GitBase { get; set; } = "https://github.com/MaveraDSS/";
 
     public ServiceSpec? FindService(string name) =>
         Services.FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
@@ -56,6 +58,8 @@ public sealed class Manifest
 public sealed class FrontendSpec
 {
     public string Repo { get; set; } = "";
+    /// <summary>Branch checked out when devenv clones the repo (an existing clone is never switched).</summary>
+    public string Branch { get; set; } = "develop";
     /// <summary>Directory inside the repo the start command runs in.</summary>
     public string WorkingDir { get; set; } = "";
     public int Port { get; set; }
@@ -77,6 +81,7 @@ public sealed class FrontendSecrets
 public sealed class GatewaySpec
 {
     public string Repo { get; set; } = "";
+    public string Branch { get; set; } = "develop";
     public string Project { get; set; } = "";
     public int Port { get; set; }
     /// <summary>The committed envsubst template; its cluster list is the source of truth.</summary>
@@ -108,6 +113,8 @@ public sealed class ServiceSpec
 {
     public string Name { get; set; } = "";
     public string Repo { get; set; } = "";
+    /// <summary>Branch checked out when devenv clones the repo (an existing clone is never switched).</summary>
+    public string Branch { get; set; } = "develop";
     /// <summary>Project to `dotnet run`; null until someone runs the service locally for the first time.</summary>
     public string? Project { get; set; }
     public int Port { get; set; }
@@ -154,6 +161,8 @@ public sealed class PlaceholderSpec
     public Dictionary<string, SecretPlaceholder> Secrets { get; set; } = new();
     /// <summary>Cluster hostname → target: "@identity", "@internal", "@public", or a literal such as "localhost".</summary>
     public Dictionary<string, string> Hosts { get; set; } = new();
+    /// <summary>Values that win over everything else (secrets included) when the database runs locally (--db local).</summary>
+    public Dictionary<string, string> LocalDatabase { get; set; } = new();
 }
 
 public sealed class SecretPlaceholder
@@ -215,6 +224,8 @@ public sealed class LocalSettings
     public string OtlpEndpoint { get; set; } = "http://localhost:4317";
     /// <summary>Path of the x64 `dotnet` host used for services with requiresX64 on an arm64 machine. Default: the side-by-side install location.</summary>
     public string? DotnetX64 { get; set; }
+    /// <summary>"remote": the environment's SQL Server (default). "local": SQL Server in docker, restored from the dev02 backups in mavera-compose.</summary>
+    public string Database { get; set; } = "remote";
 }
 
 // ---------------------------------------------------------------------------

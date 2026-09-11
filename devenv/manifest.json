@@ -1,7 +1,9 @@
 {
   "_comment": "What exists: the frontend, the gateway (libertine) and every backend service. Ports are assigned here, not taken from launchSettings, because devenv sets ASPNETCORE_URLS itself. A service needs `project` (its web .csproj) before it can run locally; `placeholders` says how the $Tokens in every committed appsettings.json get their values (see README, 'How a service config is rendered').",
+  "gitBase": "https://github.com/MaveraDSS/",
   "frontend": {
     "repo": "verisk-nordics-frontend",
+    "branch": "develop",
     "workingDir": "apps/dss",
     "port": 3002,
     "command": [
@@ -33,6 +35,7 @@
   },
   "gateway": {
     "repo": "mavera-libertine",
+    "branch": "dss-5583_local-dev-cors",
     "project": "LibertineWeb",
     "port": 5151,
     "configTemplate": "LibertineWeb/appsettings.json",
@@ -64,7 +67,7 @@
     "oktaInternalSecretKey": "OKTA_INTERNAL_SECRET"
   },
   "placeholders": {
-    "_comment": "Layers, later wins: x-placeholders defaults from `source`, environments/<env>.json placeholders, `local`, computed (ServiceSettings_ENV, Tracing_Connection_String), then `secrets` from secrets.json. `hosts` re-points cluster hostnames: @identity/@internal/@public are the environment's URLs, anything else is literal. A service can override single placeholders with its own `placeholders` map (e.g. CacheType: inmemory for a service that supports it).",
+    "_comment": "Layers, later wins: x-placeholders defaults from `source`, environments/<env>.json placeholders, `local`, computed (ServiceSettings_ENV, Tracing_Connection_String), then `secrets` from secrets.json. `hosts` re-points cluster hostnames: @identity/@internal/@public are the environment's URLs, anything else is literal. A service can override single placeholders with its own `placeholders` map (e.g. CacheType: inmemory for a service that supports it). `localDatabase` wins over everything (secrets included) with --db local: the SQL Server container from infra/docker-compose.yml, profile db.",
     "source": "../docker-compose.yml",
     "local": {
       "MessageBroker_Username": "mavera",
@@ -75,9 +78,14 @@
       "CacheType": "redis",
       "Log_Level": "Information",
       "Log_IncludeScopes": "false",
-      "MailSettings_MailEnvironment": "local",
+      "MailSettings_MailEnvironment": "Development",
       "MailSettings_BccMonitoringEnabled": "false",
       "ServiceSettings_Services_WebhookSubscriptionService": "mavera-client-webhook"
+    },
+    "localDatabase": {
+      "ConnectionStrings_DB_Server": "localhost",
+      "ConnectionStrings_DB_User": "sa",
+      "ConnectionStrings_DB_Pass": "Mavera_L0cal_Dev"
     },
     "secrets": {
       "ConnectionStrings_DB_Pass": {
@@ -141,6 +149,9 @@
       },
       "Bucket_Region": {
         "key": "S3_REGION"
+      },
+      "MailSettings_TestingEmailAddress": {
+        "key": "MAIL_TEST_ADDRESS"
       }
     },
     "hosts": {
@@ -454,7 +465,7 @@
       "healthPath": "/internal-notification/health",
       "usesMessageBroker": true,
       "sendsMail": true,
-      "notes": "Never point a local copy at the cluster broker: it would consume real notification messages and send real mail."
+      "notes": "Sends mail through SendGrid. Outside MailEnvironment Production/Demo every mail goes to MailSettings:TestingEmailAddress, which devenv fills from MAIL_TEST_ADDRESS; still needs --allow-mail to start."
     },
     {
       "name": "background-task-scheduler",

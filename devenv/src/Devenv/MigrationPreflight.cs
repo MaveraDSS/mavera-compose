@@ -123,12 +123,34 @@ public static partial class MigrationPreflight
             throw new DevenvException($"{service.Name}: cannot connect to the {Path.GetFileName(folder)} journal database: {ex.Message.Split('\n')[0]}");
         }
 
-        // FluentMigrator entries look like "2310311400 (2310311400_Tables_Initial)"; the journal holds only the number.
-        var pending = scripts.Where(s => !applied.Contains(s) && !applied.Contains(Path.GetFileName(s)) && !applied.Contains(s.Split(' ')[0])).ToList();
+        var pending = Pending(scripts, applied);
         return new MigrationCheck(service.Name, true, pending,
             pending.Count == 0
                 ? $"{scripts.Count} scripts in {Path.GetFileName(folder)}, all in dbo.{journal}"
                 : $"{pending.Count} of {scripts.Count} scripts not yet in dbo.{journal}");
+    }
+
+    /// <summary>Scripts in the checkout the journal does not know. Journal names may be full paths (DbUp file provider) or bare versions (FluentMigrator: entries look like "2310311400 (2310311400_Tables_Initial)").</summary>
+    public static List<string> Pending(IEnumerable<string> scripts, IEnumerable<string> applied)
+    {
+        var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var a in applied)
+        {
+            known.Add(a);
+            known.Add(Path.GetFileName(a.Replace('\\', '/')));
+        }
+        return scripts.Where(s => !known.Contains(s) && !known.Contains(Path.GetFileName(s)) && !known.Contains(s.Split(' ')[0])).ToList();
+    }
+
+    public sealed record Decision(bool Start, string Reason);
+
+    /// <summary>The policy: an unverified or pending migration blocks unless the developer overrides, or the database is a local throwaway copy.</summary>
+    public static Decision Decide(MigrationCheck check, bool allowMigrations, bool localDatabase)
+    {
+        if (!check.Blocks) return new Decision(true, check.Detail);
+        if (localDatabase) return new Decision(true, $"{check.Detail}; allowed because the database is the local container (--db local)");
+        if (allowMigrations) return new Decision(true, $"{check.Detail}; allowed by --allow-migrations, the shared database schema WILL change");
+        return new Decision(false, $"{check.Detail}; refusing to change the shared database schema (rebase, or --allow-migrations)");
     }
 
     public static string ConnectionString(ServiceSpec service, string renderedConfigJson)

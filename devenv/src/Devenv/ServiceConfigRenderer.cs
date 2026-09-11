@@ -11,7 +11,8 @@ public sealed record ServiceRenderInput(
     Manifest Manifest,
     EnvironmentSpec Environment,
     IReadOnlyList<ServiceSpec> LocalServices,
-    string GeneratedNote);
+    string GeneratedNote,
+    string? SqlHost = null);
 
 public sealed record ServiceRenderResult(string Json, IReadOnlyList<string> Warnings);
 
@@ -76,6 +77,7 @@ public static partial class ServiceConfigRenderer
             throw new DevenvException($"{input.Service.Name}: a cluster-internal hostname survived rendering; the template has a URL shape this renderer does not understand");
         }
         CheckBroker(output, input.Service.Name);
+        CheckCache(output, input.Service.Name);
         CheckConnectionStrings(output, input, warnings);
 
         return new ServiceRenderResult(json, warnings);
@@ -199,17 +201,28 @@ public static partial class ServiceConfigRenderer
         }
     }
 
+    /// <summary>Same rule as the broker: a local service may only use the local Redis, never the cluster's.</summary>
+    private static void CheckCache(JsonObject root, string service)
+    {
+        var host = root["DistributedCacheProjectSettings"]?["CacheService"]?.GetValue<string>();
+        if (host is null || host.Length == 0) return;
+        if (!host.Equals("localhost", StringComparison.OrdinalIgnoreCase) && host != "127.0.0.1")
+        {
+            throw new DevenvException($"{service}: DistributedCacheProjectSettings:CacheService would be '{host}'. A local service must only use the local Redis. Fix manifest placeholders.local (RedisInstance).");
+        }
+    }
+
     private static void CheckConnectionStrings(JsonObject root, ServiceRenderInput input, List<string> warnings)
     {
         if (root["ConnectionStrings"] is not JsonObject cs) return;
-        var expectedHost = input.Environment.Sql.Host;
+        var expectedHost = input.SqlHost ?? input.Environment.Sql.Host;
         foreach (var (name, value) in cs)
         {
             var text = value?.GetValue<string>() ?? "";
             var server = Regex.Match(text, @"(?:Server|Data Source)=(?:tcp:)?([^,;]+)", RegexOptions.IgnoreCase);
             if (server.Success && !server.Groups[1].Value.Equals(expectedHost, StringComparison.OrdinalIgnoreCase))
             {
-                warnings.Add($"ConnectionStrings:{name} points at '{server.Groups[1].Value}', not the {input.Environment.Name} database host {expectedHost}");
+                warnings.Add($"ConnectionStrings:{name} points at '{server.Groups[1].Value}', not the expected database host {expectedHost}");
             }
         }
     }

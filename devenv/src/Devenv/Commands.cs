@@ -58,6 +58,14 @@ public static class Commands
             File.Delete(ws.StateFile);
         }
 
+        if (!o.Supervisor)
+        {
+            // Clone-on-demand happens in the foreground process so the developer sees git's output and
+            // any credential prompt; the supervisor finds the repos in place.
+            var plan = Repos.Plan(ws.Manifest, ws.ReposRoot, ws.LocalServices, o.Branch);
+            await Repos.EnsureAsync(ws, plan);
+        }
+
         if (o.Detach && !o.Supervisor)
         {
             return await DetachAsync(ws, o);
@@ -94,7 +102,12 @@ public static class Commands
             foreach (var w in r.Warnings) Console.WriteLine($"  warning ({r.Name}): {w}");
         }
 
+        GuardMail(ws, o, rendered);
         await GuardMigrationsAsync(ws, o, rendered);
+        if (ws.LocalDatabase)
+        {
+            Console.WriteLine(Guards.LocalDatabaseWarning(ws.Environment.Name, ws.LocalServices.Select(s => s.Name)));
+        }
 
         if (ws.Local.Infra)
         {
@@ -183,30 +196,40 @@ public static class Commands
         }
     }
 
-    /// <summary>A local service that applies migrations at startup may only start when the remote database already has every script in the checkout.</summary>
+    /// <summary>A service that sends mail only starts with --allow-mail, a non-production mail environment and a test address.</summary>
+    private static void GuardMail(Workspace ws, CliOptions o, IReadOnlyList<Renderers.Rendered> rendered)
+    {
+        var problems = ws.LocalServices.Where(s => s.SendsMail)
+            .SelectMany(s => Guards.Mail(rendered.First(r => r.Name == s.Name).Content, s.Name, o.AllowMail))
+            .ToList();
+        if (problems.Count > 0)
+        {
+            throw new DevenvException("mail guard:\n  - " + string.Join("\n  - ", problems));
+        }
+    }
+
+    /// <summary>A local service that applies migrations at startup may only start when the target database already has every script in the checkout.</summary>
     private static async Task GuardMigrationsAsync(Workspace ws, CliOptions o, IReadOnlyList<Renderers.Rendered> rendered)
     {
-        var blocking = new List<string>();
+        var refused = new List<string>();
+        var target = ws.LocalDatabase ? "the local SQL Server container" : $"the shared {ws.Environment.Name} database";
         foreach (var service in ws.LocalServices.Where(s => s.RunsMigrations))
         {
             var config = rendered.First(r => r.Name == service.Name);
             var projectDir = Path.Combine(ws.RepoPath(service.Repo), service.ProjectDir);
-            Console.WriteLine($"migrations: {service.Name} applies database migrations at startup against the {ws.Environment.Name} database; checking");
+            Console.WriteLine($"migrations: {service.Name} applies database migrations at startup against {target}; checking");
             var check = await MigrationPreflight.CheckAsync(service, projectDir, config.Content, CancellationToken.None);
-            Console.WriteLine($"  {service.Name}: {check.Detail}");
+            var decision = MigrationPreflight.Decide(check, o.AllowMigrations, ws.LocalDatabase);
+            Console.WriteLine($"  {service.Name}: {decision.Reason}");
             foreach (var script in check.Pending.Take(20)) Console.WriteLine($"    pending: {script}");
             if (check.Pending.Count > 20) Console.WriteLine($"    ... and {check.Pending.Count - 20} more");
-            if (check.Blocks) blocking.Add(service.Name);
+            if (!decision.Start) refused.Add(service.Name);
         }
-        if (blocking.Count > 0 && !o.AllowMigrations)
+        if (refused.Count > 0)
         {
             throw new DevenvException(
-                $"refusing to start {string.Join(", ", blocking)}: it would change the shared {ws.Environment.Name} database schema. " +
-                "Rebase onto the branch the environment runs, or pass --allow-migrations if that is really what you want.");
-        }
-        if (blocking.Count > 0)
-        {
-            Console.WriteLine($"  --allow-migrations given: {string.Join(", ", blocking)} will apply its migrations to {ws.Environment.Name}");
+                $"refusing to start {string.Join(", ", refused)}: it would change the shared {ws.Environment.Name} database schema. " +
+                "Rebase onto the branch the environment runs, use --db local, or pass --allow-migrations if that is really what you want.");
         }
     }
 
@@ -331,6 +354,12 @@ public static class Commands
             Console.WriteLine(running is null
                 ? "  infra: docker not available"
                 : running.Count == 0 ? "  infra: not running" : $"  infra: {string.Join(", ", running)}");
+        }
+        Console.WriteLine($"  database: {(ws.LocalDatabase ? "local container" : ws.Environment.Sql.Host)}");
+        foreach (var s in ws.LocalServices)
+        {
+            var branch = await Repos.CurrentBranchAsync(ws.RepoPath(s.Repo));
+            Console.WriteLine($"  {s.Name}: {ws.RepoPath(s.Repo)} @ {branch ?? "(not cloned)"}");
         }
         return exit;
     }

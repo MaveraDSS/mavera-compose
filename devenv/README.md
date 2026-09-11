@@ -37,11 +37,23 @@ DSS-5590 (rollout).
   being overwritten.
 - **Docker is optional.** RabbitMQ, Redis and Jaeger start in docker only because local backend services
   need a message broker; frontend plus libertine work with `--no-infra` and no Docker at all.
-- **Guards.** A local service must only ever use the *local* RabbitMQ (cluster consumers would steal real
-  messages); a rendered config pointing anywhere else is refused. Services that run database migrations at
-  startup are checked against dev02's journal table first (DbUp `SchemaVersions`-style tables, EF Core
-  `__EFMigrationsHistory`, FluentMigrator `VersionInfo`); scripts the database has not seen block the start unless you pass
-  `--allow-migrations`. Services that send mail cannot run locally yet.
+- **Guards** (DSS-5587), each with a test in `tests/`:
+  - *Connectivity*: dev02's discovery document and, with a `--local` service, its SQL Server port must
+    answer, otherwise `up` stops with "connect Zscaler".
+  - *Broker and cache*: a local service must only ever use the *local* RabbitMQ and Redis (cluster consumers
+    would steal real messages); a rendered config pointing anywhere else is refused. A host-installed
+    RabbitMQ or Redis sitting on the container ports fails the preflight.
+  - *Migrations*: services that migrate at startup are checked against the target database's journal
+    (DbUp `SchemaVersions`-style tables, EF Core `__EFMigrationsHistory`, FluentMigrator `VersionInfo`);
+    scripts the database has not seen block the start unless you pass `--allow-migrations` or use
+    `--db local`.
+  - *Mail*: notification-service only starts with `--allow-mail`; its rendered config must have a
+    non-production `MailEnvironment` and a `TestingEmailAddress` (your `MAIL_TEST_ADDRESS`), so every
+    mail it sends goes to you.
+  - *Local database*: `--db local` runs SQL Server in docker, restored from the dev02 backups that
+    mavera-compose ships, and warns loudly that everything else still lives on dev02.
+  - *Clone on demand*: repos a run needs but that are missing next to mavera-compose are cloned on the
+    manifest branch (or `--branch`).
 
 ## Prerequisites
 
@@ -65,7 +77,9 @@ No admin rights are needed for the user-scope installs. After installing, open a
    git clone https://github.com/MaveraDSS/mavera-libertine.git
    ```
    Until the libertine change is merged: `git -C mavera-libertine checkout dss-5583_local-dev-cors`.
-   Clone the repo of any service you want to run locally into the same folder.
+   Repos you skip here (libertine, the frontend, any `--local` service) are cloned by `devenv up` on the
+   branch the manifest names, so cloning mavera-compose alone is enough; the frontend still needs its
+   package install afterwards.
 2. Frontend packages, once (about two minutes):
    ```
    cd verisk-nordics-frontend
@@ -98,8 +112,9 @@ If your repos are not next to mavera-compose, or you are not on dev02, copy `dev
 | `status` | Each process with pid, port and health; infra containers. |
 | `down` | Stops everything `up` started, including the docker infra. |
 
-Options: `--local a,b` services to run here · `--env dev02` · `--repos <path>` · `--no-infra` ·
-`--allow-migrations` · `--skip-preflight` · `--root <devenv folder>`.
+Options: `--local a,b` services to run here · `--branch <name>` for repos devenv has to clone ·
+`--db remote|local` · `--env dev02` · `--repos <path>` · `--no-infra` · `--allow-migrations` ·
+`--allow-mail` · `--skip-preflight` · `--root <devenv folder>`.
 
 Logs: `.state/logs/<name>.log` per process, `.state/logs/devenv.log` for the background supervisor.
 
@@ -135,11 +150,32 @@ blocked (sends real mail) until DSS-5587. Anything else needs its `project` path
 
 Run the frontend flows that hit the service; the service log is in `.state/logs/<name>.log`.
 
+## Local database (`--db local`)
+
+```
+devenv up -d --db local --local evaluation-service
+```
+
+SQL Server 2022 starts in docker (compose profile `db`, port 1433, `sa` / `Mavera_L0cal_Dev`) and the
+three data-bearing databases (`vera-dev02`, `vera-caregivers-dev02`, `vera-identity-dev02`) are restored
+from `Databases.zip` at the repo root by the same scripts the fleet compose uses. The first run extracts
+and restores about 300 MB, which takes a few minutes; later runs find the databases and skip. Local
+services get `Server=localhost;User Id=sa` and are allowed to run their migrations, since the backups are
+from January 2024 and every service will have scripts to apply.
+
+What it is for: schema and data work on the local services without touching dev02. What it is not:
+a consistent environment. Libertine, the frontend login and every remote service still use dev02's live
+data, so ids and users differ from the restored copy; `up` prints a warning saying so. On an arm64 Mac the
+x64 SQL Server image runs emulated and needs a Docker VM with at least 4 GB (`colima start --memory 6`,
+or the Docker Desktop resource settings). Taking a fresh backup from dev02 to replace `Databases.zip`
+needs devops (permissions on the AWS SQL instance) and is documented in mavera-compose's README.
+
 ## Adding a service to the manifest (checklist)
 
 1. `manifest.json` → `services[]`: `name` (kebab-case), `repo` (GitHub repo name; it is also the cluster
-   hostname the other templates use), `project` (web `.csproj`, relative to the repo), a free `port`
-   (52xx), `healthPath` (from `MapHealthChecks` in Program.cs; omit for a port check).
+   hostname the other templates use), `branch` if not `develop` (used when devenv clones it), `project`
+   (web `.csproj`, relative to the repo), a free `port` (52xx), `healthPath` (from `MapHealthChecks` in
+   Program.cs; omit for a port check).
 2. Libertine wiring: `clusterIds` (the YARP cluster ids in libertine's `appsettings.json` that point at
    it), `serviceSettingsNames` (its entries in libertine's `ServiceSettings.Services`), `publicPrefix`
    if the frontend calls it directly (`Vera/<Service>`), `remotePath` if another template names it by

@@ -11,6 +11,7 @@ public sealed class Workspace
     public IReadOnlyDictionary<string, string> Secrets { get; }
     public bool HasSecretsFile { get; }
     public string DeveloperName { get; }
+    public CliOptions Options { get; private set; } = new();
     public string StateDir => Path.Combine(Root, ".state");
     public string StateFile => Path.Combine(StateDir, "processes.json");
     public string LogDir => Path.Combine(StateDir, "logs");
@@ -62,6 +63,14 @@ public sealed class Workspace
         {
             local.LocalServices = options.Local.ToList();
         }
+        if (options.Database is not null)
+        {
+            local.Database = options.Database;
+        }
+        if (local.Database is not ("remote" or "local"))
+        {
+            throw new DevenvException($"database must be 'remote' or 'local', not '{local.Database}'");
+        }
 
         var envFile = Path.Combine(root, "environments", local.Environment + ".json");
         if (!File.Exists(envFile))
@@ -91,8 +100,14 @@ public sealed class Workspace
             }
         }
 
-        return new Workspace(root, reposRoot, manifest, env, local, secrets, hasSecrets, developer);
+        return new Workspace(root, reposRoot, manifest, env, local, secrets, hasSecrets, developer) { Options = options };
     }
+
+    /// <summary>--db local: services use the SQL Server container instead of the environment's database.</summary>
+    public bool LocalDatabase => Local.Database == "local";
+
+    /// <summary>Host the services' connection strings should point at.</summary>
+    public string SqlHost => LocalDatabase ? "localhost" : Environment.Sql.Host;
 
     /// <summary>Walks up from the current directory, then from the binary's directory, looking for manifest.json.</summary>
     public static string? FindRoot()
