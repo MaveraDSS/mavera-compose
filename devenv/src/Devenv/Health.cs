@@ -31,8 +31,27 @@ public static class Health
         }
     }
 
+    /// <summary>For processes without an HTTP health endpoint: is something accepting connections on the port?</summary>
+    public static async Task<HealthResult> ProbePortAsync(int port, CancellationToken ct = default)
+    {
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port, ct);
+            return new HealthResult(true, $"port {port} open");
+        }
+        catch (Exception)
+        {
+            return new HealthResult(false, $"port {port} closed");
+        }
+    }
+
+    /// <summary>Health of a recorded process: HTTP when it has a URL, otherwise the port.</summary>
+    public static Task<HealthResult> ProbeAsync(RunningProcess p, CancellationToken ct = default) =>
+        p.HealthUrl is null ? ProbePortAsync(p.Port, ct) : ProbeAsync(p.HealthUrl, acceptClientErrors: true, ct);
+
     /// <summary>Polls until healthy or the deadline passes. `isAlive` lets the wait stop early when the process died.</summary>
-    public static async Task<HealthResult> WaitAsync(string url, TimeSpan timeout, Func<bool> isAlive, bool acceptClientErrors, CancellationToken ct)
+    public static async Task<HealthResult> WaitAsync(string? url, int port, TimeSpan timeout, Func<bool> isAlive, bool acceptClientErrors, CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + timeout;
         HealthResult last = new(false, "not started");
@@ -42,7 +61,7 @@ public static class Health
             {
                 return new HealthResult(false, "process exited");
             }
-            last = await ProbeAsync(url, acceptClientErrors, ct);
+            last = url is null ? await ProbePortAsync(port, ct) : await ProbeAsync(url, acceptClientErrors, ct);
             if (last.Ok)
             {
                 return last;

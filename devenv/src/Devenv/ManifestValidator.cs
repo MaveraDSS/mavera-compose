@@ -7,6 +7,9 @@ public static partial class ManifestValidator
     [GeneratedRegex("^[a-z0-9]+(-[a-z0-9]+)*$")]
     private static partial Regex KebabCase();
 
+    [GeneratedRegex("^[A-Za-z0-9_]+$")]
+    private static partial Regex Identifier();
+
     public static List<string> Validate(Manifest m)
     {
         var errors = new List<string>();
@@ -63,6 +66,29 @@ public static partial class ManifestValidator
             if (s.Project is not null && (Path.IsPathRooted(s.Project) || s.Project.Contains("..")))
             {
                 errors.Add($"service '{label}': project must be a relative path inside the repo");
+            }
+            if (s.Migrations is not null and not ("dbup" or "efcore"))
+            {
+                errors.Add($"service '{label}': migrations must be 'dbup' or 'efcore'");
+            }
+            if (s.MigrationsJournal is not null && !Identifier().IsMatch(s.MigrationsJournal))
+            {
+                errors.Add($"service '{label}': migrationsJournal must be a plain table name");
+            }
+        }
+
+        foreach (var (placeholder, secret) in m.Placeholders.Secrets)
+        {
+            if (string.IsNullOrWhiteSpace(secret.Key))
+            {
+                errors.Add($"placeholders.secrets.{placeholder}: key is required");
+            }
+        }
+        foreach (var (host, target) in m.Placeholders.Hosts)
+        {
+            if (target.StartsWith('@') && target is not ("@identity" or "@internal" or "@public"))
+            {
+                errors.Add($"placeholders.hosts.{host}: unknown target {target}");
             }
         }
 

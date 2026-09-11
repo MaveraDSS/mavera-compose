@@ -79,6 +79,35 @@ public class ManifestValidatorTests
         Assert.Contains(errors, e => e.Contains("ingress must be"));
     }
 
+    [Theory]
+    [InlineData("liquibase")]
+    [InlineData("DBUP")]
+    public void UnknownMigrationKindIsRejected(string kind)
+    {
+        var m = Fixture.Manifest();
+        m.Services[0].Migrations = kind;
+        var errors = ManifestValidator.Validate(m);
+        Assert.Contains(errors, e => e.Contains("migrations must be"));
+    }
+
+    [Fact]
+    public void JournalMustBeAPlainTableName()
+    {
+        var m = Fixture.Manifest();
+        m.Services[0].MigrationsJournal = "dbo.SchemaVersions; DROP TABLE x";
+        var errors = ManifestValidator.Validate(m);
+        Assert.Contains(errors, e => e.Contains("migrationsJournal"));
+    }
+
+    [Fact]
+    public void EverySecretPlaceholderNamesAKey()
+    {
+        var m = Fixture.Manifest();
+        m.Placeholders.Secrets["X"] = new SecretPlaceholder { Key = "" };
+        var errors = ManifestValidator.Validate(m);
+        Assert.Contains(errors, e => e.Contains("placeholders.secrets.X"));
+    }
+
     [Fact]
     public void EveryClusterInTheLibertineTemplateIsEitherClaimedOrKnownExternal()
     {

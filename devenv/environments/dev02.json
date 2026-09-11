@@ -13,12 +13,31 @@
   },
   "sql": {
     "host": "mssql-internal.test.mavera.claims.verisk.com",
-    "database": "vera-dev02"
+    "database": "vera-dev02",
+    "user": "libertine"
   },
   "frontend": {
     "NEXT_PUBLIC_ROPC_CLIENT": "ropc_client",
     "NEXT_PUBLIC_SMB_SETTINGS_SHARE": "stage",
     "MONGO_BRIDGE_API_URL": "https://mongodb-news.test.mavera.claims.verisk.com"
+  },
+  "placeholders": {
+    "_comment": "Overrides for the fleet-compose defaults when a service runs locally against this environment.",
+    "ServiceSettings_EnvURL": "dev02.test.mavera.claims.verisk.com",
+    "ServiceSettings_ClientUrl": "dev02-mavera.vercel.app",
+    "ConnectionStrings_DB_Server": "mssql-internal.test.mavera.claims.verisk.com",
+    "ConnectionStrings_DB_User": "libertine",
+    "ConnectionStrings_DB_Name": "vera-dev02",
+    "ConnectionStrings_CaregiverContext_DB_Name": "vera-caregivers-dev02",
+    "ConnectionString_DB_IdentityServer": "vera-identity-dev02",
+    "Okta_Domain": "sso.int.verisk.com",
+    "Okta_AuthServerId": "aus2ta01bgqyH6hHq0h8",
+    "Okta_Audience": "vnordics-dev02aws-dss",
+    "Okta_Audiences": "api,internalapi,internalservices",
+    "Okta_InternalServices_ClientId": "0oa2ta051fvbwMCpr0h8",
+    "ContractSettings_CallbackUrl": "https://dev02.test.mavera.claims.verisk.com/contract/callback",
+    "IdentityServer_IssuerUri": "https://dev02.test.mavera.claims.verisk.com",
+    "IdentityServer_PublicOrigin": "https://dev02.test.mavera.claims.verisk.com"
   },
   "connectivityCheckUrl": "https://dev02.test.mavera.claims.verisk.com/.well-known/openid-configuration",
   "notes": "Reachable only with Zscaler connected. Each environment has its own Okta authorization server (vnordics-<env>-dss) and its own internal-services client; the legacy server aus2oxv9rn64WrLLi0h8 is rejected here."

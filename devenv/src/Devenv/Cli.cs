@@ -11,6 +11,8 @@ public sealed class CliOptions
     public bool NoInfra { get; init; }
     public bool SkipPreflight { get; init; }
     public bool DryRun { get; init; }
+    /// <summary>Start a local service even when its checkout holds migration scripts the remote database has not seen.</summary>
+    public bool AllowMigrations { get; init; }
     /// <summary>Hidden: this process is the background supervisor started by `up -d`.</summary>
     public bool Supervisor { get; init; }
     public List<string> RawArgs { get; } = new();
@@ -18,7 +20,7 @@ public sealed class CliOptions
     public static CliOptions Parse(string[] args)
     {
         string? command = null, env = null, repos = null, root = null;
-        bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false;
+        bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false, allowMigrations = false;
         var local = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -35,6 +37,7 @@ public sealed class CliOptions
                 case "--no-infra": noInfra = true; break;
                 case "--skip-preflight": skip = true; break;
                 case "--dry-run": dry = true; break;
+                case "--allow-migrations": allowMigrations = true; break;
                 case "--supervisor": supervisor = true; break;
                 default:
                     if (a.StartsWith('-')) throw new DevenvException($"unknown option {a}");
@@ -47,7 +50,7 @@ public sealed class CliOptions
         var o = new CliOptions
         {
             Command = command, Environment = env, ReposRoot = repos, Root = root, Detach = detach,
-            NoInfra = noInfra, SkipPreflight = skip, DryRun = dry, Supervisor = supervisor,
+            NoInfra = noInfra, SkipPreflight = skip, DryRun = dry, Supervisor = supervisor, AllowMigrations = allowMigrations,
         };
         o.Local.AddRange(local);
         o.RawArgs.AddRange(args);
@@ -95,6 +98,12 @@ public static class Cli
             Console.Error.WriteLine($"error: {ex.Message}");
             return 2;
         }
+        catch (Exception ex)
+        {
+            // Console.Error may be redirected to devenv.log (background supervisor); an unhandled exception would bypass that.
+            Console.Error.WriteLine($"unexpected error: {ex}");
+            return 3;
+        }
     }
 
     private static int Unknown(string command)
@@ -113,14 +122,17 @@ public static class Cli
 
             commands
               check     preflight only: tools, repos, VPN, ports, secrets
-              render    write libertine's appsettings.Development.json and the frontend .env (no start)
+              render    write libertine's appsettings.Development.json, the frontend .env and the config of every
+                        --local service (no start)
               up        check, render, start infra (docker), libertine and the frontend; Ctrl+C stops them
               status    show what is running and whether it answers
               down      stop everything `up` started, including the docker infra
 
             options
-              --local <name>[,<name>]   services to run on this machine (see manifest.json); routes in libertine
-                                        point at localhost for them. Starting them is DSS-5586; today only render.
+              --local <name>[,<name>]   services to run on this machine (see manifest.json): their config is rendered
+                                        from the committed template, libertine routes point at localhost for them
+              --allow-migrations        up: start a local service even though it would apply migration scripts the
+                                        remote database has not seen (DbUp) or cannot be checked (EF Core)
               --env <name>              remote environment (default from devenv.local.json, else dev02)
               --repos <path>            folder holding the cloned repos (default: parent of mavera-compose)
               -d, --detach              up: leave everything running in the background and return

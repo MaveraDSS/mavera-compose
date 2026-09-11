@@ -28,7 +28,17 @@ public static class Preflight
             Directory.Exists(nodeModules) ? "node_modules present" : $"run `corepack pnpm install --frozen-lockfile` in {ws.RepoPath(m.Frontend.Repo)}"));
         foreach (var s in ws.LocalServices)
         {
-            results.Add(RepoCheck($"{s.Name} repo", ws.RepoPath(s.Repo), s.Project ?? ""));
+            results.Add(s.Project is null
+                ? new PreflightResult($"{s.Name} repo", false, "manifest has no project path for this service yet; fill in services[].project")
+                : RepoCheck($"{s.Name} repo", ws.RepoPath(s.Repo), s.Project));
+            if (!ws.Local.Infra)
+            {
+                results.Add(new PreflightResult($"{s.Name} infra", false, "a local service needs the local RabbitMQ/Redis; do not use --no-infra with --local"));
+            }
+            if (s.SendsMail)
+            {
+                results.Add(new PreflightResult($"{s.Name} mail", false, "sends real mail; running it locally is not supported until DSS-5587 adds a mail sink"));
+            }
         }
 
         results.Add(ws.HasSecretsFile

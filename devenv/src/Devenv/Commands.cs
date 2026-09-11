@@ -22,8 +22,7 @@ public static class Commands
 
     public static int Render(Workspace ws, CliOptions o)
     {
-        var rendered = Renderers.All(ws);
-        foreach (var r in rendered)
+        foreach (var r in Renderers.All(ws))
         {
             if (o.DryRun)
             {
@@ -32,9 +31,11 @@ public static class Commands
             }
             else
             {
-                Renderers.Write(r);
+                var backup = Renderers.Write(r, ws);
                 Console.WriteLine($"wrote {r.Path}");
+                if (backup is not null) Console.WriteLine($"  previous hand-written file saved as {backup}");
             }
+            foreach (var w in r.Warnings) Console.WriteLine($"  warning ({r.Name}): {w}");
         }
         if (ws.LocalServices.Count > 0)
         {
@@ -47,15 +48,6 @@ public static class Commands
 
     public static async Task<int> UpAsync(Workspace ws, CliOptions o)
     {
-        if (ws.LocalServices.Count > 0)
-        {
-            // Rendering libertine routes for local services works today; starting the services themselves
-            // (their own config, migrations, broker safety) is DSS-5586.
-            throw new DevenvException(
-                $"starting local services is not implemented yet (DSS-5586): {string.Join(", ", ws.LocalServices.Select(s => s.Name))}. " +
-                "Use `devenv render --local <name>` to point libertine at a service you start yourself, then `devenv up` without --local.");
-        }
-
         if (File.Exists(ws.StateFile))
         {
             var existing = ReadState(ws);
@@ -93,11 +85,16 @@ public static class Commands
         }
 
         Console.WriteLine("render");
-        foreach (var r in Renderers.All(ws))
+        var rendered = Renderers.All(ws);
+        foreach (var r in rendered)
         {
-            Renderers.Write(r);
+            var backup = Renderers.Write(r, ws);
             Console.WriteLine($"  wrote {r.Path}");
+            if (backup is not null) Console.WriteLine($"  previous hand-written file saved as {backup}");
+            foreach (var w in r.Warnings) Console.WriteLine($"  warning ({r.Name}): {w}");
         }
+
+        await GuardMigrationsAsync(ws, o, rendered);
 
         if (ws.Local.Infra)
         {
@@ -131,8 +128,8 @@ public static class Commands
             foreach (var child in children)
             {
                 var spec = child.Spec;
-                var result = await Health.WaitAsync(spec.HealthUrl, spec.StartTimeout, () => !child.HasExited, acceptClientErrors: spec.EdgeHealthUrl is null, cts.Token);
-                Console.WriteLine($"  {spec.Name}: {spec.HealthUrl} -> {result.Detail}");
+                var result = await Health.WaitAsync(spec.HealthUrl, spec.Port, spec.StartTimeout, () => !child.HasExited, acceptClientErrors: spec.EdgeHealthUrl is null, cts.Token);
+                Console.WriteLine($"  {spec.Name}: {spec.HealthUrl ?? $"port {spec.Port}"} -> {result.Detail}");
                 healthy &= result.Ok;
                 if (result.Ok && spec.EdgeHealthUrl is not null)
                 {
@@ -153,7 +150,8 @@ public static class Commands
             else
             {
                 Console.WriteLine();
-                Console.WriteLine($"ready: frontend {ws.FrontendOrigin}  libertine {ws.GatewayOrigin}  remote {ws.Environment.Name}");
+                var locals = ws.LocalServices.Count == 0 ? "" : $"  local: {string.Join(", ", ws.LocalServices.Select(s => $"{s.Name} :{s.Port}"))}";
+                Console.WriteLine($"ready: frontend {ws.FrontendOrigin}  libertine {ws.GatewayOrigin}  remote {ws.Environment.Name}{locals}");
                 Console.WriteLine(o.Supervisor ? $"logs in {ws.LogDir}; stop with `devenv down`" : "Ctrl+C stops the processes (docker infra stays up; `devenv down` stops that too)");
             }
 
@@ -182,6 +180,33 @@ public static class Commands
             {
                 File.Delete(ws.StateFile);
             }
+        }
+    }
+
+    /// <summary>A local service that applies migrations at startup may only start when the remote database already has every script in the checkout.</summary>
+    private static async Task GuardMigrationsAsync(Workspace ws, CliOptions o, IReadOnlyList<Renderers.Rendered> rendered)
+    {
+        var blocking = new List<string>();
+        foreach (var service in ws.LocalServices.Where(s => s.RunsMigrations))
+        {
+            var config = rendered.First(r => r.Name == service.Name);
+            var projectDir = Path.Combine(ws.RepoPath(service.Repo), service.ProjectDir);
+            Console.WriteLine($"migrations: {service.Name} applies database migrations at startup against the {ws.Environment.Name} database; checking");
+            var check = await MigrationPreflight.CheckAsync(service, projectDir, config.Content, CancellationToken.None);
+            Console.WriteLine($"  {service.Name}: {check.Detail}");
+            foreach (var script in check.Pending.Take(20)) Console.WriteLine($"    pending: {script}");
+            if (check.Pending.Count > 20) Console.WriteLine($"    ... and {check.Pending.Count - 20} more");
+            if (check.Blocks) blocking.Add(service.Name);
+        }
+        if (blocking.Count > 0 && !o.AllowMigrations)
+        {
+            throw new DevenvException(
+                $"refusing to start {string.Join(", ", blocking)}: it would change the shared {ws.Environment.Name} database schema. " +
+                "Rebase onto the branch the environment runs, or pass --allow-migrations if that is really what you want.");
+        }
+        if (blocking.Count > 0)
+        {
+            Console.WriteLine($"  --allow-migrations given: {string.Join(", ", blocking)} will apply its migrations to {ws.Environment.Name}");
         }
     }
 
@@ -217,7 +242,7 @@ public static class Commands
         supervisor.BeginErrorReadLine();
         Console.WriteLine($"supervisor started (pid {supervisor.Id}); waiting for health, logs in {ws.LogDir}");
 
-        var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(4);
+        var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(6);
         while (DateTime.UtcNow < deadline)
         {
             await Task.Delay(3000);
@@ -234,7 +259,7 @@ public static class Commands
             var all = true;
             foreach (var p in state.Processes)
             {
-                var r = await Health.ProbeAsync(p.HealthUrl, acceptClientErrors: true);
+                var r = await Health.ProbeAsync(p);
                 all &= r.Ok;
             }
             if (all)
@@ -294,8 +319,8 @@ public static class Commands
             foreach (var p in state.Processes)
             {
                 var alive = ProcessRunner.IsAlive(p.Pid);
-                var health = alive ? await Health.ProbeAsync(p.HealthUrl, acceptClientErrors: true) : new HealthResult(false, "process gone");
-                Console.WriteLine($"  {p.Name,-12} pid {p.Pid,-7} :{p.Port,-5} {(alive ? "running" : "stopped"),-8} {p.HealthUrl} -> {health.Detail}");
+                var health = alive ? await Health.ProbeAsync(p) : new HealthResult(false, "process gone");
+                Console.WriteLine($"  {p.Name,-24} pid {p.Pid,-7} :{p.Port,-5} {(alive ? "running" : "stopped"),-8} {p.HealthUrl ?? "(port check)"} -> {health.Detail}");
                 if (!alive || !health.Ok) exit = 1;
             }
         }
@@ -315,23 +340,33 @@ public static class Commands
     public static List<ProcessSpec> BuildProcessSpecs(Workspace ws)
     {
         var m = ws.Manifest;
-        var gwRepo = ws.RepoPath(m.Gateway.Repo);
-        var libertine = new ProcessSpec(
+        var specs = new List<ProcessSpec>();
+
+        // Local backend services first: they take longest (build, migrations) and libertine does not need them to be up.
+        foreach (var s in ws.LocalServices)
+        {
+            specs.Add(new ProcessSpec(
+                s.Name,
+                ws.RepoPath(s.Repo),
+                new[] { "dotnet", "run", "--project", s.Project!, "--no-launch-profile" },
+                DotnetEnvironment($"http://localhost:{s.Port}"),
+                s.Port,
+                s.HealthPath is null ? null : $"http://localhost:{s.Port}{s.HealthPath}",
+                null,
+                TimeSpan.FromMinutes(5)));
+        }
+
+        specs.Add(new ProcessSpec(
             "libertine",
-            gwRepo,
+            ws.RepoPath(m.Gateway.Repo),
             new[] { "dotnet", "run", "--project", m.Gateway.Project, "--no-launch-profile" },
-            new Dictionary<string, string>
-            {
-                ["ASPNETCORE_ENVIRONMENT"] = "Development",
-                ["ASPNETCORE_URLS"] = ws.GatewayOrigin,
-                ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
-            },
+            DotnetEnvironment(ws.GatewayOrigin),
             m.Gateway.Port,
             ws.GatewayOrigin + m.Gateway.HealthPath,
             ws.GatewayOrigin + m.Gateway.EdgeHealthPath,
-            TimeSpan.FromMinutes(3));
+            TimeSpan.FromMinutes(3)));
 
-        var frontend = new ProcessSpec(
+        specs.Add(new ProcessSpec(
             "frontend",
             Path.Combine(ws.RepoPath(m.Frontend.Repo), m.Frontend.WorkingDir),
             m.Frontend.Command,
@@ -344,10 +379,18 @@ public static class Commands
             m.Frontend.Port,
             ws.FrontendOrigin + m.Frontend.HealthPath,
             null,
-            TimeSpan.FromMinutes(4));
+            TimeSpan.FromMinutes(4)));
 
-        return new List<ProcessSpec> { libertine, frontend };
+        return specs;
     }
+
+    private static Dictionary<string, string> DotnetEnvironment(string urls) => new()
+    {
+        ["ASPNETCORE_ENVIRONMENT"] = "Development",
+        ["DOTNET_ENVIRONMENT"] = "Development",
+        ["ASPNETCORE_URLS"] = urls,
+        ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
+    };
 
     private static void WriteState(Workspace ws, IEnumerable<ChildProcess> children)
     {

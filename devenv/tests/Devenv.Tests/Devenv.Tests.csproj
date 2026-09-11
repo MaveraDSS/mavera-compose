@@ -23,6 +23,7 @@
     <None Include="Fixtures/**" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../manifest.json" Link="Fixtures/manifest.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../environments/dev02.json" Link="Fixtures/dev02.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../../docker-compose.yml" Link="Fixtures/docker-compose.yml" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

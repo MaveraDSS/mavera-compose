@@ -9,7 +9,7 @@ public sealed record ProcessSpec(
     IReadOnlyList<string> Command,
     IReadOnlyDictionary<string, string> Environment,
     int Port,
-    string HealthUrl,
+    string? HealthUrl,
     /// <summary>Second URL checked after HealthUrl; retried once because libertine's first proxied request can 504.</summary>
     string? EdgeHealthUrl,
     TimeSpan StartTimeout);

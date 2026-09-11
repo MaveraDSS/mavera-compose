@@ -9,7 +9,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>devenv</AssemblyName>
     <RootNamespace>Devenv</RootNamespace>
-    <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- Packable as a .NET tool later: dotnet pack, then dotnet tool install with the nupkg folder as source. -->
     <PackAsTool>true</PackAsTool>
@@ -18,5 +17,10 @@
     <Version>0.1.0</Version>
     <Description>Local development environment for Mavera DSS: frontend and selected services on the developer machine, everything else on a remote environment.</Description>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Migration preflight: reads the DbUp journal table of the remote database before a local service may start. -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />
+  </ItemGroup>
 
 </Project>

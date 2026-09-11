@@ -47,6 +47,7 @@ public sealed class Manifest
     public FrontendSpec Frontend { get; set; } = new();
     public GatewaySpec Gateway { get; set; } = new();
     public List<ServiceSpec> Services { get; set; } = new();
+    public PlaceholderSpec Placeholders { get; set; } = new();
 
     public ServiceSpec? FindService(string name) =>
         Services.FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase));
@@ -117,10 +118,46 @@ public sealed class ServiceSpec
     /// <summary>Entries in libertine's ServiceSettings.Services that point at this service.</summary>
     public List<string> ServiceSettingsNames { get; set; } = new();
     public string? HealthPath { get; set; }
-    public bool RunsMigrations { get; set; }
+    /// <summary>Path of this service on the remote internal ingress, used when another service's template names it by bare hostname.</summary>
+    public string? RemotePath { get; set; }
+    /// <summary>"dbup" or "efcore" when the service applies migrations at startup; null otherwise.</summary>
+    public string? Migrations { get; set; }
+    /// <summary>DbUp: folder with the .sql scripts, relative to the project directory (default _Migrations).</summary>
+    public string? MigrationsFolder { get; set; }
+    /// <summary>DbUp: journal table holding applied script names (default SchemaVersions).</summary>
+    public string? MigrationsJournal { get; set; }
+    /// <summary>Connection string name in the rendered config used for the migration preflight (default MaveraContext).</summary>
+    public string? ConnectionStringName { get; set; }
+    /// <summary>Config template relative to the project directory (default appsettings.json).</summary>
+    public string ConfigTemplate { get; set; } = "appsettings.json";
+    public string ConfigOutput { get; set; } = "appsettings.Development.json";
+    public bool RunsMigrations => Migrations is not null;
     public bool UsesMessageBroker { get; set; }
     public bool SendsMail { get; set; }
+    /// <summary>Placeholder values that apply to this service only, on top of manifest placeholders.local.</summary>
+    public Dictionary<string, string> Placeholders { get; set; } = new();
     public string? Notes { get; set; }
+
+    public string ProjectDir => Project is null ? "" : (Path.GetDirectoryName(Project) ?? "");
+}
+
+/// <summary>How $Placeholder tokens in the services' committed appsettings.json templates get their values.</summary>
+public sealed class PlaceholderSpec
+{
+    /// <summary>Compose file whose x-placeholders block supplies the defaults, relative to the devenv folder.</summary>
+    public string Source { get; set; } = "";
+    /// <summary>Values that make a service talk to the local infra instead of the cluster's.</summary>
+    public Dictionary<string, string> Local { get; set; } = new();
+    /// <summary>Placeholder → secrets.json key.</summary>
+    public Dictionary<string, SecretPlaceholder> Secrets { get; set; } = new();
+    /// <summary>Cluster hostname → target: "@identity", "@internal", "@public", or a literal such as "localhost".</summary>
+    public Dictionary<string, string> Hosts { get; set; } = new();
+}
+
+public sealed class SecretPlaceholder
+{
+    public string Key { get; set; } = "";
+    public bool Required { get; set; }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +174,8 @@ public sealed class EnvironmentSpec
     public SqlSpec Sql { get; set; } = new();
     /// <summary>Non-secret frontend variables that differ per environment.</summary>
     public Dictionary<string, string> Frontend { get; set; } = new();
+    /// <summary>Placeholder values specific to this environment (hosts, database, Okta server).</summary>
+    public Dictionary<string, string> Placeholders { get; set; } = new();
     /// <summary>A URL that only answers when the VPN/Zscaler is connected.</summary>
     public string ConnectivityCheckUrl { get; set; } = "";
     public string? Notes { get; set; }
@@ -155,6 +194,7 @@ public sealed class SqlSpec
 {
     public string Host { get; set; } = "";
     public string Database { get; set; } = "";
+    public string User { get; set; } = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +231,6 @@ public sealed class RunningProcess
     public string Name { get; set; } = "";
     public int Pid { get; set; }
     public int Port { get; set; }
-    public string HealthUrl { get; set; } = "";
+    public string? HealthUrl { get; set; }
     public string LogFile { get; set; } = "";
 }
