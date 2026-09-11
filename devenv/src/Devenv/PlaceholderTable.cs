@@ -17,7 +17,6 @@ public sealed record PlaceholderResolution(
 ///   4. the service's own placeholders map in the manifest
 ///   5. computed per machine (telemetry endpoint, service environment name)
 ///   6. secrets.json through manifest placeholders.secrets
-///   7. with --db local: manifest placeholders.localDatabase (server, user, password of the container)
 /// </summary>
 public static partial class PlaceholderTable
 {
@@ -95,8 +94,7 @@ public static partial class PlaceholderTable
         IReadOnlyDictionary<string, string> serviceOverrides,
         IReadOnlyDictionary<string, string> computed,
         IReadOnlyDictionary<string, string> secrets,
-        IReadOnlySet<string> used,
-        IReadOnlyDictionary<string, string>? finalOverrides = null)
+        IReadOnlySet<string> used)
     {
         var values = new Dictionary<string, string>(composeDefaults, StringComparer.Ordinal);
         foreach (var (k, v) in environment.Placeholders) values[k] = v;
@@ -118,17 +116,6 @@ public static partial class PlaceholderTable
             else if (used.Contains(placeholder) && !values.ContainsKey(placeholder))
             {
                 values[placeholder] = "";
-            }
-        }
-
-        if (finalOverrides is not null)
-        {
-            // --db local: the container's server, user and password beat even the secrets layer, and a
-            // missing remote DB password is no longer a problem.
-            foreach (var (k, v) in finalOverrides)
-            {
-                values[k] = v;
-                missing.RemoveAll(m => m.EndsWith($"(for ${k})", StringComparison.Ordinal));
             }
         }
 

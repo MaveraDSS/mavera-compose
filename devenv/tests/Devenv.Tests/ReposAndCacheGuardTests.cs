@@ -4,11 +4,11 @@ using Xunit;
 
 namespace Devenv.Tests;
 
-public class ReposAndLocalDbTests : IDisposable
+public class ReposAndCacheGuardTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "devenv-tests-" + Guid.NewGuid().ToString("N"));
 
-    public ReposAndLocalDbTests() => Directory.CreateDirectory(_root);
+    public ReposAndCacheGuardTests() => Directory.CreateDirectory(_root);
 
     public void Dispose() => Directory.Delete(_root, recursive: true);
 
@@ -58,38 +58,6 @@ public class ReposAndLocalDbTests : IDisposable
         File.WriteAllText(Path.Combine(_root, m.Frontend.Repo, "leftover.txt"), "x");
         var ex = Assert.Throws<DevenvException>(() => Repos.Plan(m, _root, Array.Empty<ServiceSpec>(), null));
         Assert.Contains("not a git repository", ex.Message);
-    }
-
-    [Fact]
-    public void LocalDatabaseOverridesWinOverSecretsAndClearMissingPassword()
-    {
-        var m = Fixture.Manifest();
-        var used = new HashSet<string> { "ConnectionStrings_DB_Server", "ConnectionStrings_DB_User", "ConnectionStrings_DB_Pass" };
-        var noSecrets = new Dictionary<string, string>();
-        var remote = PlaceholderTable.Resolve(new Dictionary<string, string>(), Fixture.Dev02(), m.Placeholders, new Dictionary<string, string>(), new Dictionary<string, string>(), noSecrets, used);
-        Assert.Single(remote.MissingRequiredSecrets); // DB_PASSWORD is required against the remote database
-
-        var local = PlaceholderTable.Resolve(new Dictionary<string, string>(), Fixture.Dev02(), m.Placeholders, new Dictionary<string, string>(), new Dictionary<string, string>(), noSecrets, used, m.Placeholders.LocalDatabase);
-        Assert.Empty(local.MissingRequiredSecrets);
-        Assert.Equal("localhost", local.Values["ConnectionStrings_DB_Server"]);
-        Assert.Equal("sa", local.Values["ConnectionStrings_DB_User"]);
-        Assert.Equal("Mavera_L0cal_Dev", local.Values["ConnectionStrings_DB_Pass"]);
-    }
-
-    [Fact]
-    public void RenderedConnectionStringPointsAtTheContainerWithLocalDatabase()
-    {
-        var m = Fixture.Manifest();
-        var template = Fixture.Read("evaluation.appsettings.json");
-        var compose = PlaceholderTable.ParseComposeDefaults(Fixture.Read("docker-compose.yml"));
-        var computed = new Dictionary<string, string> { ["ServiceSettings_ENV"] = "x", ["Tracing_Connection_String"] = "http://localhost:4317" };
-        var secrets = new Dictionary<string, string> { ["OKTA_INTERNAL_SECRET"] = "s" };
-        var r = PlaceholderTable.Resolve(compose, Fixture.Dev02(), m.Placeholders, new Dictionary<string, string>(), computed, secrets, PlaceholderTable.TokensIn(template), m.Placeholders.LocalDatabase);
-        var result = ServiceConfigRenderer.Render(new ServiceRenderInput(m.FindService("evaluation-service")!, template, r.Values, m, Fixture.Dev02(), Array.Empty<ServiceSpec>(), "test", SqlHost: "localhost"));
-        var cs = JsonDocument.Parse(result.Json).RootElement.GetProperty("ConnectionStrings").GetProperty("MaveraContext").GetString()!;
-        Assert.Contains("Server=tcp:localhost,1433", cs);
-        Assert.Contains("User Id=sa", cs);
-        Assert.DoesNotContain(result.Warnings, w => w.Contains("ConnectionStrings"));
     }
 
     [Fact]

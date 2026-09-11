@@ -104,10 +104,6 @@ public static class Commands
 
         GuardMail(ws, o, rendered);
         await GuardMigrationsAsync(ws, o, rendered);
-        if (ws.LocalDatabase)
-        {
-            Console.WriteLine(Guards.LocalDatabaseWarning(ws.Environment.Name, ws.LocalServices.Select(s => s.Name)));
-        }
 
         if (ws.Local.Infra)
         {
@@ -212,14 +208,14 @@ public static class Commands
     private static async Task GuardMigrationsAsync(Workspace ws, CliOptions o, IReadOnlyList<Renderers.Rendered> rendered)
     {
         var refused = new List<string>();
-        var target = ws.LocalDatabase ? "the local SQL Server container" : $"the shared {ws.Environment.Name} database";
+        var target = $"the shared {ws.Environment.Name} database";
         foreach (var service in ws.LocalServices.Where(s => s.RunsMigrations))
         {
             var config = rendered.First(r => r.Name == service.Name);
             var projectDir = Path.Combine(ws.RepoPath(service.Repo), service.ProjectDir);
             Console.WriteLine($"migrations: {service.Name} applies database migrations at startup against {target}; checking");
             var check = await MigrationPreflight.CheckAsync(service, projectDir, config.Content, CancellationToken.None);
-            var decision = MigrationPreflight.Decide(check, o.AllowMigrations, ws.LocalDatabase);
+            var decision = MigrationPreflight.Decide(check, o.AllowMigrations);
             Console.WriteLine($"  {service.Name}: {decision.Reason}");
             foreach (var script in check.Pending.Take(20)) Console.WriteLine($"    pending: {script}");
             if (check.Pending.Count > 20) Console.WriteLine($"    ... and {check.Pending.Count - 20} more");
@@ -229,7 +225,7 @@ public static class Commands
         {
             throw new DevenvException(
                 $"refusing to start {string.Join(", ", refused)}: it would change the shared {ws.Environment.Name} database schema. " +
-                "Rebase onto the branch the environment runs, use --db local, or pass --allow-migrations if that is really what you want.");
+                "Rebase onto the branch the environment runs, or pass --allow-migrations if that is really what you want.");
         }
     }
 
@@ -355,7 +351,7 @@ public static class Commands
                 ? "  infra: docker not available"
                 : running.Count == 0 ? "  infra: not running" : $"  infra: {string.Join(", ", running)}");
         }
-        Console.WriteLine($"  database: {(ws.LocalDatabase ? "local container" : ws.Environment.Sql.Host)}");
+        Console.WriteLine($"  database: {ws.Environment.Sql.Host}");
         foreach (var s in ws.LocalServices)
         {
             var branch = await Repos.CurrentBranchAsync(ws.RepoPath(s.Repo));

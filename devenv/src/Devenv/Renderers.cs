@@ -61,8 +61,7 @@ public static class Renderers
             ["ServiceSettings_ENV"] = $"Local-DEV-{ws.DeveloperName}",
             ["Tracing_Connection_String"] = ws.Local.OtlpEndpoint,
         };
-        var finalOverrides = ws.LocalDatabase ? ws.Manifest.Placeholders.LocalDatabase : null;
-        var resolution = PlaceholderTable.Resolve(composeDefaults, ws.Environment, ws.Manifest.Placeholders, service.Placeholders, computed, ws.Secrets, used, finalOverrides);
+        var resolution = PlaceholderTable.Resolve(composeDefaults, ws.Environment, ws.Manifest.Placeholders, service.Placeholders, computed, ws.Secrets, used);
         if (resolution.MissingRequiredSecrets.Count > 0)
         {
             throw new DevenvException($"{service.Name}: secrets missing or blank in secrets.json: {string.Join(", ", resolution.MissingRequiredSecrets)} (see secrets.example.json)");

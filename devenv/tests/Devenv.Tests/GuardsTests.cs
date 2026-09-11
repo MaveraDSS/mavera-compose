@@ -59,40 +59,30 @@ public class GuardsTests
     public void MigrationDecisionRefusesPendingScriptsAgainstTheRemoteDatabase()
     {
         var check = new MigrationCheck("evaluation-service", Verified: true, new[] { "0360_new.sql" }, "1 of 360 pending");
-        var d = MigrationPreflight.Decide(check, allowMigrations: false, localDatabase: false);
+        var d = MigrationPreflight.Decide(check, allowMigrations: false);
         Assert.False(d.Start);
         Assert.Contains("--allow-migrations", d.Reason);
     }
 
     [Fact]
-    public void MigrationDecisionHonoursTheOverrideAndTheLocalDatabase()
+    public void MigrationDecisionHonoursTheOverride()
     {
         var check = new MigrationCheck("evaluation-service", Verified: true, new[] { "0360_new.sql" }, "1 of 360 pending");
-        Assert.True(MigrationPreflight.Decide(check, allowMigrations: true, localDatabase: false).Start);
-        Assert.True(MigrationPreflight.Decide(check, allowMigrations: false, localDatabase: true).Start);
+        Assert.True(MigrationPreflight.Decide(check, allowMigrations: true).Start);
     }
 
     [Fact]
     public void MigrationDecisionRefusesUnverifiedChecks()
     {
         var check = new MigrationCheck("caregivers", Verified: false, Array.Empty<string>(), "journal table missing");
-        Assert.False(MigrationPreflight.Decide(check, allowMigrations: false, localDatabase: false).Start);
-        Assert.True(MigrationPreflight.Decide(check, allowMigrations: true, localDatabase: false).Start);
+        Assert.False(MigrationPreflight.Decide(check, allowMigrations: false).Start);
+        Assert.True(MigrationPreflight.Decide(check, allowMigrations: true).Start);
     }
 
     [Fact]
     public void MigrationDecisionStartsWhenNothingIsPending()
     {
         var check = new MigrationCheck("user-service", Verified: true, Array.Empty<string>(), "3 scripts, all in journal");
-        Assert.True(MigrationPreflight.Decide(check, allowMigrations: false, localDatabase: false).Start);
-    }
-
-    [Fact]
-    public void LocalDatabaseWarningNamesTheServicesAndTheEnvironment()
-    {
-        var text = Guards.LocalDatabaseWarning("dev02", new[] { "evaluation-service" });
-        Assert.Contains("evaluation-service", text);
-        Assert.Contains("dev02", text);
-        Assert.Contains("CONTAINER", text);
+        Assert.True(MigrationPreflight.Decide(check, allowMigrations: false).Start);
     }
 }

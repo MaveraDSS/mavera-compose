@@ -1,7 +1,9 @@
 # devenv
 
 Run the DSS frontend and the backend services you are working on **on your own machine**, with everything
-else (the other 25 services, login, the database) on a shared remote environment, dev02 by default.
+else (the other 25 services, login, the database) on a shared remote environment, dev02 by default. There is
+one database, dev02's; a local copy was considered and dropped (DSS-5587), because a mix of local and remote
+services must see the same data.
 One command starts it, one stops it. Works the same on Windows and macOS.
 
 ```
@@ -45,13 +47,10 @@ DSS-5590 (rollout).
     RabbitMQ or Redis sitting on the container ports fails the preflight.
   - *Migrations*: services that migrate at startup are checked against the target database's journal
     (DbUp `SchemaVersions`-style tables, EF Core `__EFMigrationsHistory`, FluentMigrator `VersionInfo`);
-    scripts the database has not seen block the start unless you pass `--allow-migrations` or use
-    `--db local`.
+    scripts the database has not seen block the start unless you pass `--allow-migrations`.
   - *Mail*: notification-service only starts with `--allow-mail`; its rendered config must have a
     non-production `MailEnvironment` and a `TestingEmailAddress` (your `MAIL_TEST_ADDRESS`), so every
     mail it sends goes to you.
-  - *Local database*: `--db local` runs SQL Server in docker, restored from the dev02 backups that
-    mavera-compose ships, and warns loudly that everything else still lives on dev02.
   - *Clone on demand*: repos a run needs but that are missing next to mavera-compose are cloned on the
     manifest branch (or `--branch`).
 
@@ -113,8 +112,8 @@ If your repos are not next to mavera-compose, or you are not on dev02, copy `dev
 | `down` | Stops everything `up` started, including the docker infra. |
 
 Options: `--local a,b` services to run here · `--branch <name>` for repos devenv has to clone ·
-`--db remote|local` · `--env dev02` · `--repos <path>` · `--no-infra` · `--allow-migrations` ·
-`--allow-mail` · `--skip-preflight` · `--root <devenv folder>`.
+`--env dev02` · `--repos <path>` · `--no-infra` · `--allow-migrations` · `--allow-mail` ·
+`--skip-preflight` · `--root <devenv folder>`.
 
 Logs: `.state/logs/<name>.log` per process, `.state/logs/devenv.log` for the background supervisor.
 
@@ -149,26 +148,6 @@ document-service, medical-advisor-network, caregivers, integration. notification
 blocked (sends real mail) until DSS-5587. Anything else needs its `project` path filled in first.
 
 Run the frontend flows that hit the service; the service log is in `.state/logs/<name>.log`.
-
-## Local database (`--db local`)
-
-```
-devenv up -d --db local --local evaluation-service
-```
-
-SQL Server 2022 starts in docker (compose profile `db`, port 1433, `sa` / `Mavera_L0cal_Dev`) and the
-three data-bearing databases (`vera-dev02`, `vera-caregivers-dev02`, `vera-identity-dev02`) are restored
-from `Databases.zip` at the repo root by the same scripts the fleet compose uses. The first run extracts
-and restores about 300 MB, which takes a few minutes; later runs find the databases and skip. Local
-services get `Server=localhost;User Id=sa` and are allowed to run their migrations, since the backups are
-from January 2024 and every service will have scripts to apply.
-
-What it is for: schema and data work on the local services without touching dev02. What it is not:
-a consistent environment. Libertine, the frontend login and every remote service still use dev02's live
-data, so ids and users differ from the restored copy; `up` prints a warning saying so. On an arm64 Mac the
-x64 SQL Server image runs emulated and needs a Docker VM with at least 4 GB (`colima start --memory 6`,
-or the Docker Desktop resource settings). Taking a fresh backup from dev02 to replace `Databases.zip`
-needs devops (permissions on the AWS SQL instance) and is documented in mavera-compose's README.
 
 ## Adding a service to the manifest (checklist)
 

@@ -53,7 +53,7 @@ public static class Preflight
             : new PreflightResult("secrets", false, $"copy secrets.example.json to secrets.json and fill it (README)"));
 
         results.Add(await ConnectivityCheckAsync(ws.Environment));
-        if (ws.LocalServices.Count > 0 && !ws.LocalDatabase)
+        if (ws.LocalServices.Count > 0)
         {
             results.Add(await SqlReachableAsync(ws.Environment));
         }
@@ -63,8 +63,7 @@ public static class Preflight
             // A RabbitMQ or Redis installed on the host (brew services, a Windows service) sits on the same
             // ports as the containers; the service would then talk to it with the wrong credentials.
             var running = await Infra.RunningAsync(ws) ?? Array.Empty<string>();
-            var wanted = ws.LocalDatabase ? Infra.PublishedPorts.Concat(Infra.DatabasePorts) : Infra.PublishedPorts;
-            foreach (var (service, ports) in wanted)
+            foreach (var (service, ports) in Infra.PublishedPorts)
             {
                 if (running.Contains(service, StringComparer.OrdinalIgnoreCase)) continue;
                 foreach (var port in ports)
@@ -175,7 +174,7 @@ public static class Preflight
         }
         catch (Exception ex)
         {
-            return new PreflightResult("remote sql", false, $"cannot reach {env.Sql.Host}:1433 ({ex.GetType().Name}); connect Zscaler, or use --db local");
+            return new PreflightResult("remote sql", false, $"cannot reach {env.Sql.Host}:1433 ({ex.GetType().Name}); connect Zscaler");
         }
     }
 

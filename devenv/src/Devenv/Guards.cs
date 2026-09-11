@@ -37,19 +37,4 @@ public static class Guards
         }
         return problems;
     }
-
-    /// <summary>The warning printed when --db local is combined with anything that still lives on the remote environment.</summary>
-    public static string LocalDatabaseWarning(string environment, IEnumerable<string> localServices)
-    {
-        var locals = string.Join(", ", localServices);
-        return string.Join('\n', new[]
-        {
-            "==================================================================================",
-            $"  --db local: {(locals.Length == 0 ? "no local service" : locals)} use(s) the SQL Server CONTAINER (restored from the 2024 dev02 backups),",
-            $"  while libertine, the frontend login and every remote service still work on {environment}'s live data.",
-            "  Ids, users and organisations will not match between the two. Use this mode to work on schema and",
-            "  data of the local services only; anything that crosses the boundary will look broken.",
-            "==================================================================================",
-        });
-    }
 }

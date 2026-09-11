@@ -15,8 +15,6 @@ public sealed class CliOptions
     public bool AllowMigrations { get; init; }
     /// <summary>Start a service that sends mail; every message then goes to MAIL_TEST_ADDRESS.</summary>
     public bool AllowMail { get; init; }
-    /// <summary>"remote" or "local" database; null = devenv.local.json / default.</summary>
-    public string? Database { get; init; }
     /// <summary>Branch to check out in repos devenv clones for --local services.</summary>
     public string? Branch { get; init; }
     /// <summary>Hidden: this process is the background supervisor started by `up -d`.</summary>
@@ -25,7 +23,7 @@ public sealed class CliOptions
 
     public static CliOptions Parse(string[] args)
     {
-        string? command = null, env = null, repos = null, root = null, db = null, branch = null;
+        string? command = null, env = null, repos = null, root = null, branch = null;
         bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false, allowMigrations = false, allowMail = false;
         var local = new List<string>();
 
@@ -45,7 +43,6 @@ public sealed class CliOptions
                 case "--dry-run": dry = true; break;
                 case "--allow-migrations": allowMigrations = true; break;
                 case "--allow-mail": allowMail = true; break;
-                case "--db": db = Next(a); break;
                 case "--branch": branch = Next(a); break;
                 case "--supervisor": supervisor = true; break;
                 default:
@@ -60,7 +57,7 @@ public sealed class CliOptions
         {
             Command = command, Environment = env, ReposRoot = repos, Root = root, Detach = detach,
             NoInfra = noInfra, SkipPreflight = skip, DryRun = dry, Supervisor = supervisor, AllowMigrations = allowMigrations,
-            AllowMail = allowMail, Database = db, Branch = branch,
+            AllowMail = allowMail, Branch = branch,
         };
         o.Local.AddRange(local);
         o.RawArgs.AddRange(args);
@@ -146,8 +143,6 @@ public static class Cli
                                         remote database has not seen
               --allow-mail              up: start a service that sends mail (notification-service); every message
                                         goes to MAIL_TEST_ADDRESS from secrets.json, never to real users
-              --db remote|local         remote (default): the environment's SQL Server. local: SQL Server in docker,
-                                        restored from the dev02 backups in mavera-compose; migrations are then allowed
               --branch <name>           branch to check out in repos devenv has to clone for --local services
               --env <name>              remote environment (default from devenv.local.json, else dev02)
               --repos <path>            folder holding the cloned repos (default: parent of mavera-compose)

@@ -67,7 +67,7 @@
     "oktaInternalSecretKey": "OKTA_INTERNAL_SECRET"
   },
   "placeholders": {
-    "_comment": "Layers, later wins: x-placeholders defaults from `source`, environments/<env>.json placeholders, `local`, computed (ServiceSettings_ENV, Tracing_Connection_String), then `secrets` from secrets.json. `hosts` re-points cluster hostnames: @identity/@internal/@public are the environment's URLs, anything else is literal. A service can override single placeholders with its own `placeholders` map (e.g. CacheType: inmemory for a service that supports it). `localDatabase` wins over everything (secrets included) with --db local: the SQL Server container from infra/docker-compose.yml, profile db.",
+    "_comment": "Layers, later wins: x-placeholders defaults from `source`, environments/<env>.json placeholders, `local`, computed (ServiceSettings_ENV, Tracing_Connection_String), then `secrets` from secrets.json. `hosts` re-points cluster hostnames: @identity/@internal/@public are the environment's URLs, anything else is literal. A service can override single placeholders with its own `placeholders` map (e.g. CacheType: inmemory for a service that supports it).",
     "source": "../docker-compose.yml",
     "local": {
       "MessageBroker_Username": "mavera",
@@ -81,11 +81,6 @@
       "MailSettings_MailEnvironment": "Development",
       "MailSettings_BccMonitoringEnabled": "false",
       "ServiceSettings_Services_WebhookSubscriptionService": "mavera-client-webhook"
-    },
-    "localDatabase": {
-      "ConnectionStrings_DB_Server": "localhost",
-      "ConnectionStrings_DB_User": "sa",
-      "ConnectionStrings_DB_Pass": "Mavera_L0cal_Dev"
     },
     "secrets": {
       "ConnectionStrings_DB_Pass": {

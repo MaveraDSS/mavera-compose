@@ -144,11 +144,10 @@ public static partial class MigrationPreflight
 
     public sealed record Decision(bool Start, string Reason);
 
-    /// <summary>The policy: an unverified or pending migration blocks unless the developer overrides, or the database is a local throwaway copy.</summary>
-    public static Decision Decide(MigrationCheck check, bool allowMigrations, bool localDatabase)
+    /// <summary>The policy: an unverified or pending migration blocks unless the developer overrides.</summary>
+    public static Decision Decide(MigrationCheck check, bool allowMigrations)
     {
         if (!check.Blocks) return new Decision(true, check.Detail);
-        if (localDatabase) return new Decision(true, $"{check.Detail}; allowed because the database is the local container (--db local)");
         if (allowMigrations) return new Decision(true, $"{check.Detail}; allowed by --allow-migrations, the shared database schema WILL change");
         return new Decision(false, $"{check.Detail}; refusing to change the shared database schema (rebase, or --allow-migrations)");
     }

@@ -161,8 +161,6 @@ public sealed class PlaceholderSpec
     public Dictionary<string, SecretPlaceholder> Secrets { get; set; } = new();
     /// <summary>Cluster hostname → target: "@identity", "@internal", "@public", or a literal such as "localhost".</summary>
     public Dictionary<string, string> Hosts { get; set; } = new();
-    /// <summary>Values that win over everything else (secrets included) when the database runs locally (--db local).</summary>
-    public Dictionary<string, string> LocalDatabase { get; set; } = new();
 }
 
 public sealed class SecretPlaceholder
@@ -224,8 +222,6 @@ public sealed class LocalSettings
     public string OtlpEndpoint { get; set; } = "http://localhost:4317";
     /// <summary>Path of the x64 `dotnet` host used for services with requiresX64 on an arm64 machine. Default: the side-by-side install location.</summary>
     public string? DotnetX64 { get; set; }
-    /// <summary>"remote": the environment's SQL Server (default). "local": SQL Server in docker, restored from the dev02 backups in mavera-compose.</summary>
-    public string Database { get; set; } = "remote";
 }
 
 // ---------------------------------------------------------------------------
