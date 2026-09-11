@@ -35,6 +35,13 @@ public static class Preflight
             {
                 results.Add(new PreflightResult($"{s.Name} infra", false, "a local service needs the local RabbitMQ/Redis; do not use --no-infra with --local"));
             }
+            if (s.RequiresX64 && Workspace.IsArm64)
+            {
+                var x64 = ws.DotnetX64Path;
+                results.Add(File.Exists(x64)
+                    ? new PreflightResult($"{s.Name} x64 host", true, x64)
+                    : new PreflightResult($"{s.Name} x64 host", false, $"{s.Name} carries x64-only assemblies and this is an arm64 machine; install the x64 .NET SDK side by side (expected at {x64}) or set dotnetX64 in devenv.local.json"));
+            }
             if (s.SendsMail)
             {
                 results.Add(new PreflightResult($"{s.Name} mail", false, "sends real mail; running it locally is not supported until DSS-5587 adds a mail sink"));
@@ -46,6 +53,25 @@ public static class Preflight
             : new PreflightResult("secrets", false, $"copy secrets.example.json to secrets.json and fill it (README)"));
 
         results.Add(await ConnectivityCheckAsync(ws.Environment));
+
+        if (includePorts && ws.Local.Infra)
+        {
+            // A RabbitMQ or Redis installed on the host (brew services, a Windows service) sits on the same
+            // ports as the containers; the service would then talk to it with the wrong credentials.
+            var running = await Infra.RunningAsync(ws) ?? Array.Empty<string>();
+            foreach (var (service, ports) in Infra.PublishedPorts)
+            {
+                if (running.Contains(service, StringComparer.OrdinalIgnoreCase)) continue;
+                foreach (var port in ports)
+                {
+                    var check = PortCheck($"infra {service}", port);
+                    if (!check.Ok)
+                    {
+                        results.Add(check with { Detail = $"{port} is already served by another program (a host-installed {service}? `brew services list` / services.msc); stop it, the devenv container must own this port" });
+                    }
+                }
+            }
+        }
 
         if (includePorts)
         {

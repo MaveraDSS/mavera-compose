@@ -134,6 +134,8 @@ public sealed class ServiceSpec
     public bool RunsMigrations => Migrations is not null;
     public bool UsesMessageBroker { get; set; }
     public bool SendsMail { get; set; }
+    /// <summary>True when the service carries x64-only assemblies (Service Fabric remoting); on an arm64 Mac it runs under the x64 .NET host.</summary>
+    public bool RequiresX64 { get; set; }
     /// <summary>Placeholder values that apply to this service only, on top of manifest placeholders.local.</summary>
     public Dictionary<string, string> Placeholders { get; set; } = new();
     public string? Notes { get; set; }
@@ -211,6 +213,8 @@ public sealed class LocalSettings
     public List<string> LocalServices { get; set; } = new();
     public bool Infra { get; set; } = true;
     public string OtlpEndpoint { get; set; } = "http://localhost:4317";
+    /// <summary>Path of the x64 `dotnet` host used for services with requiresX64 on an arm64 machine. Default: the side-by-side install location.</summary>
+    public string? DotnetX64 { get; set; }
 }
 
 // ---------------------------------------------------------------------------

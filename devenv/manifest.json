@@ -157,7 +157,9 @@
       "migrationsFolder": "_Migrations",
       "migrationsJournal": "SchemaVersions",
       "connectionStringName": "MaveraContext",
-      "usesMessageBroker": true
+      "usesMessageBroker": true,
+      "requiresX64": true,
+      "notes": "Carries x64-only Service Fabric remoting assemblies (via Vera.Common / Mavera.Access.*): on an arm64 Mac devenv starts it with the x64 .NET host."
     },
     {
       "name": "user-service",
@@ -176,7 +178,9 @@
       "migrationsFolder": "_Migrations",
       "migrationsJournal": "UserServiceSchemaVersions",
       "connectionStringName": "MaveraContext",
-      "usesMessageBroker": true
+      "usesMessageBroker": true,
+      "requiresX64": true,
+      "notes": "Carries x64-only Service Fabric remoting assemblies (via Vera.Common / Mavera.Access.*): on an arm64 Mac devenv starts it with the x64 .NET host."
     },
     {
       "name": "document-service",

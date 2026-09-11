@@ -118,6 +118,17 @@ public sealed class Workspace
         Local.LocalServices.Select(n => Manifest.FindService(n)!).ToList();
 
     public string FrontendOrigin => $"http://localhost:{Manifest.Frontend.Port}";
+
+    /// <summary>The running machine's process architecture is arm64 (Apple Silicon, Windows on ARM).</summary>
+    public static bool IsArm64 => System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.Arm64;
+
+    /// <summary>Where an x64 .NET host would live when installed side by side with the arm64 one.</summary>
+    public string DotnetX64Path => Local.DotnetX64 ?? (OperatingSystem.IsWindows()
+        ? Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ProgramFiles), "dotnet", "x64", "dotnet.exe")
+        : "/usr/local/share/dotnet/x64/dotnet");
+
+    /// <summary>The dotnet host to start this service with: the x64 one on arm64 when the service needs it, otherwise plain `dotnet`.</summary>
+    public string DotnetHostFor(ServiceSpec service) => service.RequiresX64 && IsArm64 ? DotnetX64Path : "dotnet";
     public string GatewayOrigin => $"http://localhost:{Manifest.Gateway.Port}";
 
     public string RequireSecret(string key)

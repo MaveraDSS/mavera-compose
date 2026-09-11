@@ -345,11 +345,18 @@ public static class Commands
         // Local backend services first: they take longest (build, migrations) and libertine does not need them to be up.
         foreach (var s in ws.LocalServices)
         {
+            var env = DotnetEnvironment($"http://localhost:{s.Port}");
+            var host = ws.DotnetHostFor(s);
+            if (host != "dotnet")
+            {
+                // The side-by-side x64 install rarely has the exact runtime the service targets; let it roll forward.
+                env["DOTNET_ROLL_FORWARD"] = "Major";
+            }
             specs.Add(new ProcessSpec(
                 s.Name,
                 ws.RepoPath(s.Repo),
-                new[] { "dotnet", "run", "--project", s.Project!, "--no-launch-profile" },
-                DotnetEnvironment($"http://localhost:{s.Port}"),
+                new[] { host, "run", "--project", s.Project!, "--no-launch-profile" },
+                env,
                 s.Port,
                 s.HealthPath is null ? null : $"http://localhost:{s.Port}{s.HealthPath}",
                 null,

@@ -122,6 +122,12 @@ What happens in addition to the plain `up`:
 5. Libertine's rendered config routes `/Vera/EvaluationService/**` and the `mavera-evaluation-service`
    cluster to `http://localhost:5201/`; other local services see it there too.
 
+**Apple Silicon note.** evaluation-service and user-service carry x64-only Service Fabric assemblies (a
+leftover from the old hosting), which the arm64 .NET runtime cannot load. devenv starts those services
+with the x64 .NET host installed side by side (`/usr/local/share/dotnet/x64/dotnet`; get it from the
+"macOS x64" installer on dotnet.microsoft.com, any version 8 or newer, it rolls forward). `check` tells
+you when it is missing. Windows x64 machines need nothing extra.
+
 Services that can run locally today (have a `project` in the manifest): evaluation-service, user-service,
 document-service, medical-advisor-network, caregivers, integration. notification-service is listed but
 blocked (sends real mail) until DSS-5587. Anything else needs its `project` path filled in first.
@@ -139,7 +145,9 @@ Run the frontend flows that hit the service; the service log is in `.state/logs/
    bare hostname.
 3. Migrations: `migrations: "dbup"` with `migrationsFolder`, `migrationsJournal` (the table name in
    `JournalToSqlTable`, default `SchemaVersions`) and `connectionStringName`; or `"efcore"`.
-4. Flags: `usesMessageBroker` (registers RabbitMQ consumers), `sendsMail`.
+4. Flags: `usesMessageBroker` (registers RabbitMQ consumers), `sendsMail`, `requiresX64` (x64-only
+   assemblies in the build output; check with the PE headers if a service crashes with
+   `ReflectionTypeLoadException` on a Mac).
 5. New `$Placeholders` in its template: add environment values to `environments/<env>.json`, local infra
    values to `placeholders.local`, secrets to `placeholders.secrets` and `secrets.example.json`. Anything
    not in the fleet compose defaults either. `devenv render --local <name> --dry-run` refuses until every

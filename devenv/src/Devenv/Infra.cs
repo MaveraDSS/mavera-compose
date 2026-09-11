@@ -3,6 +3,14 @@ namespace Devenv;
 /// <summary>RabbitMQ, Redis and Jaeger (OTLP collector + UI) in docker, for services that run locally.</summary>
 public static class Infra
 {
+    /// <summary>Host ports the infra compose file publishes, per compose service. Kept in sync with infra/docker-compose.yml by hand.</summary>
+    public static readonly IReadOnlyDictionary<string, int[]> PublishedPorts = new Dictionary<string, int[]>
+    {
+        ["rabbitmq"] = new[] { 5672, 15672 },
+        ["redis"] = new[] { 6379 },
+        ["jaeger"] = new[] { 4317, 4318, 16686 },
+    };
+
     private static string[] Base(Workspace ws) => new[] { "compose", "-p", Workspace.InfraProjectName, "-f", ws.InfraComposeFile };
 
     public static async Task UpAsync(Workspace ws)
