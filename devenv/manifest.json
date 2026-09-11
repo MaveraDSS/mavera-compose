@@ -135,6 +135,12 @@
       },
       "Okta_Integration_ClientId": {
         "key": "OKTA_INTEGRATION_CLIENT_ID"
+      },
+      "Bucket_DocumentsBucketName": {
+        "key": "S3_BUCKET_NAME"
+      },
+      "Bucket_Region": {
+        "key": "S3_REGION"
       }
     },
     "hosts": {
