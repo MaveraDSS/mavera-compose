@@ -22,7 +22,7 @@
     "MONGO_BRIDGE_API_URL": "https://mongodb-news.test.mavera.claims.verisk.com"
   },
   "placeholders": {
-    "_comment": "Overrides for the fleet-compose defaults when a service runs locally against this environment.",
+    "_comment": "Overrides for the fleet-compose defaults when a service runs locally against this environment. InternalServicesSettings_SystemAccountUserId is the well-known system account (evaluation-service hardcodes the same GUID in its template).",
     "ServiceSettings_EnvURL": "dev02.test.mavera.claims.verisk.com",
     "ServiceSettings_ClientUrl": "dev02-mavera.vercel.app",
     "ConnectionStrings_DB_Server": "mssql-internal.test.mavera.claims.verisk.com",
@@ -37,7 +37,8 @@
     "Okta_InternalServices_ClientId": "0oa2ta051fvbwMCpr0h8",
     "ContractSettings_CallbackUrl": "https://dev02.test.mavera.claims.verisk.com/contract/callback",
     "IdentityServer_IssuerUri": "https://dev02.test.mavera.claims.verisk.com",
-    "IdentityServer_PublicOrigin": "https://dev02.test.mavera.claims.verisk.com"
+    "IdentityServer_PublicOrigin": "https://dev02.test.mavera.claims.verisk.com",
+    "InternalServicesSettings_SystemAccountUserId": "9BF59C0E-262C-E311-93FA-0016C7CE037E"
   },
   "connectivityCheckUrl": "https://dev02.test.mavera.claims.verisk.com/.well-known/openid-configuration",
   "notes": "Reachable only with Zscaler connected. Each environment has its own Okta authorization server (vnordics-<env>-dss) and its own internal-services client; the legacy server aus2oxv9rn64WrLLi0h8 is rejected here."

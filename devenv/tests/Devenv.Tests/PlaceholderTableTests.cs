@@ -112,6 +112,17 @@ public class PlaceholderTableTests
     }
 
     [Fact]
+    public void ABlankOptionalSecretDoesNotClobberALowerLayer()
+    {
+        var env = new EnvironmentSpec { Placeholders = new() { ["P"] = "from-env" } };
+        var spec = new PlaceholderSpec { Secrets = new() { ["P"] = new SecretPlaceholder { Key = "K" } } };
+        var none = new Dictionary<string, string>();
+        var r = PlaceholderTable.Resolve(none, env, spec, none, none, none, new HashSet<string> { "P" });
+        Assert.Equal("from-env", r.Values["P"]);
+        Assert.Empty(r.Blank);
+    }
+
+    [Fact]
     public void TokensInFindsEveryDistinctPlaceholder()
     {
         var tokens = PlaceholderTable.TokensIn("\"a\": \"$X\", \"b\": \"http://$Y.svc/$X\", \"c\": \"$$Z\"");

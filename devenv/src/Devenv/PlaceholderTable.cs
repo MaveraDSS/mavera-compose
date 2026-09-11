@@ -113,7 +113,7 @@ public static partial class PlaceholderTable
             {
                 missing.Add($"{secret.Key} (for ${placeholder})");
             }
-            else if (used.Contains(placeholder))
+            else if (used.Contains(placeholder) && !values.ContainsKey(placeholder))
             {
                 values[placeholder] = "";
             }

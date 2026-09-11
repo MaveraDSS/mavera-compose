@@ -39,8 +39,9 @@ DSS-5590 (rollout).
   need a message broker; frontend plus libertine work with `--no-infra` and no Docker at all.
 - **Guards.** A local service must only ever use the *local* RabbitMQ (cluster consumers would steal real
   messages); a rendered config pointing anywhere else is refused. Services that run database migrations at
-  startup are checked against dev02's journal table first; scripts the database has not seen block the
-  start unless you pass `--allow-migrations`. Services that send mail cannot run locally yet.
+  startup are checked against dev02's journal table first (DbUp `SchemaVersions`-style tables, EF Core
+  `__EFMigrationsHistory`, FluentMigrator `VersionInfo`); scripts the database has not seen block the start unless you pass
+  `--allow-migrations`. Services that send mail cannot run locally yet.
 
 ## Prerequisites
 
@@ -122,7 +123,7 @@ What happens in addition to the plain `up`:
 5. Libertine's rendered config routes `/Vera/EvaluationService/**` and the `mavera-evaluation-service`
    cluster to `http://localhost:5201/`; other local services see it there too.
 
-**Apple Silicon note.** evaluation-service and user-service carry x64-only Service Fabric assemblies (a
+**Apple Silicon note.** evaluation-service, user-service and document-service carry x64-only Service Fabric assemblies (a
 leftover from the old hosting), which the arm64 .NET runtime cannot load. devenv starts those services
 with the x64 .NET host installed side by side (`/usr/local/share/dotnet/x64/dotnet`; get it from the
 "macOS x64" installer on dotnet.microsoft.com, any version 8 or newer, it rolls forward). `check` tells
@@ -144,7 +145,9 @@ Run the frontend flows that hit the service; the service log is in `.state/logs/
    if the frontend calls it directly (`Vera/<Service>`), `remotePath` if another template names it by
    bare hostname.
 3. Migrations: `migrations: "dbup"` with `migrationsFolder`, `migrationsJournal` (the table name in
-   `JournalToSqlTable`, default `SchemaVersions`) and `connectionStringName`; or `"efcore"`.
+   `JournalToSqlTable`, default `SchemaVersions`) and `connectionStringName`; or `"efcore"` (folder
+   `Migrations`, journal `__EFMigrationsHistory`); or `"fluentmigrator"` (folder `Migrations`, journal
+   `VersionInfo`, versions read from the `[Migration(NNN)]` attributes).
 4. Flags: `usesMessageBroker` (registers RabbitMQ consumers), `sendsMail`, `requiresX64` (x64-only
    assemblies in the build output; check with the PE headers if a service crashes with
    `ReflectionTypeLoadException` on a Mac).

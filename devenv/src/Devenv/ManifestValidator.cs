@@ -67,9 +67,9 @@ public static partial class ManifestValidator
             {
                 errors.Add($"service '{label}': project must be a relative path inside the repo");
             }
-            if (s.Migrations is not null and not ("dbup" or "efcore"))
+            if (s.Migrations is not null and not ("dbup" or "efcore" or "fluentmigrator"))
             {
-                errors.Add($"service '{label}': migrations must be 'dbup' or 'efcore'");
+                errors.Add($"service '{label}': migrations must be 'dbup', 'efcore' or 'fluentmigrator'");
             }
             if (s.MigrationsJournal is not null && !Identifier().IsMatch(s.MigrationsJournal))
             {

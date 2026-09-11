@@ -76,7 +76,8 @@
       "Log_Level": "Information",
       "Log_IncludeScopes": "false",
       "MailSettings_MailEnvironment": "local",
-      "MailSettings_BccMonitoringEnabled": "false"
+      "MailSettings_BccMonitoringEnabled": "false",
+      "ServiceSettings_Services_WebhookSubscriptionService": "mavera-client-webhook"
     },
     "secrets": {
       "ConnectionStrings_DB_Pass": {
@@ -131,6 +132,9 @@
       },
       "InternalServicesSettings_SystemAccountUserId": {
         "key": "SYSTEM_ACCOUNT_USER_ID"
+      },
+      "Okta_Integration_ClientId": {
+        "key": "OKTA_INTEGRATION_CLIENT_ID"
       }
     },
     "hosts": {
@@ -199,7 +203,9 @@
       "migrationsFolder": "_Migrations",
       "migrationsJournal": "DocumentServiceSchemaVersions",
       "connectionStringName": "MaveraContext",
-      "usesMessageBroker": true
+      "usesMessageBroker": true,
+      "requiresX64": true,
+      "notes": "Carries x64-only Service Fabric assemblies (System.Fabric via Vera.Common): on an arm64 Mac devenv starts it with the x64 .NET host."
     },
     {
       "name": "medical-advisor-network",
@@ -238,9 +244,12 @@
       ],
       "serviceSettingsNames": [],
       "healthPath": "/caregivers/health",
-      "migrations": "efcore",
+      "migrations": "fluentmigrator",
+      "migrationsFolder": "Migrations",
+      "migrationsJournal": "VersionInfo",
       "connectionStringName": "CaregiverContext",
-      "usesMessageBroker": true
+      "usesMessageBroker": true,
+      "notes": "FluentMigrator with MigrateUp pinned in Migrations/MigrationExtension.cs; the DbContext also calls EnsureCreated()."
     },
     {
       "name": "identity-client",

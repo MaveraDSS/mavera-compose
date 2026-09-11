@@ -12,8 +12,8 @@ public sealed record MigrationCheck(string Service, bool Verified, IReadOnlyList
 /// <summary>
 /// Several services run database migrations at startup. Against the shared remote database that is only safe
 /// when the checkout holds no script the database has not already seen. For DbUp services this compares the
-/// .sql files in the migrations folder with the journal table; EF Core migrations cannot be checked this way
-/// and are reported as unverified.
+/// .sql files in the migrations folder with the journal table; for EF Core the migration classes with the
+/// __EFMigrationsHistory table.
 /// </summary>
 public static partial class MigrationPreflight
 {
@@ -29,25 +29,65 @@ public static partial class MigrationPreflight
             case "dbup":
                 return await CheckDbUpAsync(service, projectDir, renderedConfigJson, ct);
             case "efcore":
-                return new MigrationCheck(service.Name, false, Array.Empty<string>(), "runs EF Core Migrate() at startup; devenv cannot compare that with the remote database yet");
+                return await CheckEfCoreAsync(service, projectDir, renderedConfigJson, ct);
+            case "fluentmigrator":
+                return await CheckFluentMigratorAsync(service, projectDir, renderedConfigJson, ct);
             default:
-                throw new DevenvException($"{service.Name}: unknown migrations kind '{service.Migrations}' (expected dbup or efcore)");
+                throw new DevenvException($"{service.Name}: unknown migrations kind '{service.Migrations}' (expected dbup, efcore or fluentmigrator)");
         }
     }
 
-    private static async Task<MigrationCheck> CheckDbUpAsync(ServiceSpec service, string projectDir, string renderedConfigJson, CancellationToken ct)
+    private static Task<MigrationCheck> CheckDbUpAsync(ServiceSpec service, string projectDir, string renderedConfigJson, CancellationToken ct)
     {
         var folder = Path.Combine(projectDir, service.MigrationsFolder ?? "_Migrations");
         if (!Directory.Exists(folder))
         {
-            return new MigrationCheck(service.Name, true, Array.Empty<string>(), $"no migrations folder at {folder}");
+            return Task.FromResult(new MigrationCheck(service.Name, true, Array.Empty<string>(), $"no migrations folder at {folder}"));
         }
         var scripts = Directory.GetFiles(folder, "*.sql", SearchOption.AllDirectories)
             .Select(f => Path.GetRelativePath(folder, f).Replace('\\', '/'))
             .OrderBy(f => f, StringComparer.Ordinal)
             .ToList();
+        return CompareWithJournalAsync(service, folder, scripts, service.MigrationsJournal ?? "SchemaVersions", "ScriptName", renderedConfigJson, ct);
+    }
 
-        var journal = service.MigrationsJournal ?? "SchemaVersions";
+    /// <summary>EF Core: every Migrations/&lt;timestamp&gt;_&lt;Name&gt;.cs (not the Designer or the model snapshot) is a MigrationId in __EFMigrationsHistory.</summary>
+    private static Task<MigrationCheck> CheckEfCoreAsync(ServiceSpec service, string projectDir, string renderedConfigJson, CancellationToken ct)
+    {
+        var folder = Path.Combine(projectDir, service.MigrationsFolder ?? "Migrations");
+        if (!Directory.Exists(folder))
+        {
+            return Task.FromResult(new MigrationCheck(service.Name, true, Array.Empty<string>(), $"no migrations folder at {folder}"));
+        }
+        var migrations = Directory.GetFiles(folder, "*.cs", SearchOption.AllDirectories)
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(n => n is not null && !n.EndsWith(".Designer", StringComparison.Ordinal) && !n.EndsWith("ModelSnapshot", StringComparison.Ordinal) && n.Length > 15 && n[14] == '_' && n[..14].All(char.IsDigit))
+            .Select(n => n!)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+        return CompareWithJournalAsync(service, folder, migrations, service.MigrationsJournal ?? "__EFMigrationsHistory", "MigrationId", renderedConfigJson, ct);
+    }
+
+    /// <summary>FluentMigrator: every [Migration(NNN)] class under the migrations folder is a Version in the VersionInfo table.</summary>
+    private static Task<MigrationCheck> CheckFluentMigratorAsync(ServiceSpec service, string projectDir, string renderedConfigJson, CancellationToken ct)
+    {
+        var folder = Path.Combine(projectDir, service.MigrationsFolder ?? "Migrations");
+        if (!Directory.Exists(folder))
+        {
+            return Task.FromResult(new MigrationCheck(service.Name, true, Array.Empty<string>(), $"no migrations folder at {folder}"));
+        }
+        var versions = Directory.GetFiles(folder, "*.cs", SearchOption.AllDirectories)
+            .SelectMany(f => MigrationAttribute().Matches(File.ReadAllText(f)).Select(m => $"{m.Groups[1].Value} ({Path.GetFileNameWithoutExtension(f)})"))
+            .OrderBy(v => v, StringComparer.Ordinal)
+            .ToList();
+        return CompareWithJournalAsync(service, folder, versions, service.MigrationsJournal ?? "VersionInfo", "Version", renderedConfigJson, ct);
+    }
+
+    [GeneratedRegex(@"\[Migration\(\s*(\d+)")]
+    private static partial Regex MigrationAttribute();
+
+    private static async Task<MigrationCheck> CompareWithJournalAsync(ServiceSpec service, string folder, IReadOnlyList<string> scripts, string journal, string column, string renderedConfigJson, CancellationToken ct)
+    {
         if (!Identifier().IsMatch(journal))
         {
             throw new DevenvException($"{service.Name}: migrationsJournal '{journal}' is not a plain table name");
@@ -60,12 +100,12 @@ public static partial class MigrationPreflight
             await using var connection = new SqlConnection(connectionString);
             await connection.OpenAsync(ct);
             await using var command = connection.CreateCommand();
-            command.CommandText = $"SELECT ScriptName FROM dbo.[{journal}]";
+            command.CommandText = $"SELECT [{column}] FROM dbo.[{journal}]";
             command.CommandTimeout = 30;
             await using var reader = await command.ExecuteReaderAsync(ct);
             while (await reader.ReadAsync(ct))
             {
-                var name = reader.GetString(0);
+                var name = Convert.ToString(reader.GetValue(0), System.Globalization.CultureInfo.InvariantCulture) ?? "";
                 applied.Add(name);
                 applied.Add(Path.GetFileName(name.Replace('\\', '/')));
             }
@@ -83,7 +123,8 @@ public static partial class MigrationPreflight
             throw new DevenvException($"{service.Name}: cannot connect to the {Path.GetFileName(folder)} journal database: {ex.Message.Split('\n')[0]}");
         }
 
-        var pending = scripts.Where(s => !applied.Contains(s) && !applied.Contains(Path.GetFileName(s))).ToList();
+        // FluentMigrator entries look like "2310311400 (2310311400_Tables_Initial)"; the journal holds only the number.
+        var pending = scripts.Where(s => !applied.Contains(s) && !applied.Contains(Path.GetFileName(s)) && !applied.Contains(s.Split(' ')[0])).ToList();
         return new MigrationCheck(service.Name, true, pending,
             pending.Count == 0
                 ? $"{scripts.Count} scripts in {Path.GetFileName(folder)}, all in dbo.{journal}"
