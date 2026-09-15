@@ -140,8 +140,13 @@ public static class SecretsSetup
             .ToDictionary(kv => kv.Key, kv => kv.Value ?? "", StringComparer.Ordinal);
     }
 
+    /// <summary>Values worth importing from another secrets.json: real values only, for keys the example knows.</summary>
+    public static Dictionary<string, string> Importable(IReadOnlyDictionary<string, string> imported, IReadOnlyList<SecretEntry> example) =>
+        imported.Where(kv => !IsUnresolved(kv.Value) && example.Any(e => e.Key == kv.Key))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+
     /// <summary>Fills secrets.json; returns the required keys that are still blank afterwards.</summary>
-    public static async Task<List<string>> RunAsync(Workspace ws, bool interactive)
+    public static async Task<List<string>> RunAsync(Workspace ws, bool interactive, string? importFile = null)
     {
         var exampleFile = Path.Combine(ws.Root, ExampleFileName);
         if (!File.Exists(exampleFile)) throw new DevenvException($"{exampleFile} is missing");
@@ -158,7 +163,23 @@ public static class SecretsSetup
         Console.WriteLine($"  {todo.Count} of {example.Count} keys without a value{(File.Exists(ws.SecretsFile) ? "" : $" ({Path.GetFileName(ws.SecretsFile)} does not exist yet)")}");
 
         var resolved = new Dictionary<string, string>(StringComparer.Ordinal);
-        var withReference = todo.Where(e => ReferenceFor(e, existing) is not null).ToList();
+        if (importFile is not null)
+        {
+            // Sources in order: an imported file, then 1Password, then the keyboard. Existing values always win (Merge).
+            var fullPath = Path.GetFullPath(importFile);
+            if (!File.Exists(fullPath)) throw new DevenvException($"--secrets {importFile}: file not found");
+            if (string.Equals(fullPath, Path.GetFullPath(ws.SecretsFile), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DevenvException($"--secrets {importFile} is this workspace's own secrets.json; point it at the file to import from");
+            }
+            var importable = Importable(ReadExisting(fullPath), example);
+            foreach (var e in todo.Where(e => importable.ContainsKey(e.Key)))
+            {
+                resolved[e.Key] = importable[e.Key];
+            }
+            Console.WriteLine($"  {fullPath}: {resolved.Count} value(s) imported{(importable.Count > resolved.Count ? $", {importable.Count - resolved.Count} already set here and kept" : "")}");
+        }
+        var withReference = todo.Where(e => !resolved.ContainsKey(e.Key) && ReferenceFor(e, existing) is not null).ToList();
         if (withReference.Count > 0)
         {
             var op = await OnePassword.ProbeAsync();

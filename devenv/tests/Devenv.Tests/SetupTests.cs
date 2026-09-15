@@ -137,6 +137,23 @@ public class SetupTests : IDisposable
     }
 
     [Fact]
+    public void ImportTakesRealValuesForKnownKeysOnly()
+    {
+        var imported = new Dictionary<string, string> { ["A"] = "from-file", ["B"] = "op://v/i/B", ["C"] = "", ["UNKNOWN"] = "x" };
+        var importable = SecretsSetup.Importable(imported, Example);
+        Assert.Equal(new[] { "A" }, importable.Keys);
+    }
+
+    [Fact]
+    public void SecretsOptionParses()
+    {
+        var o = CliOptions.Parse(new[] { "setup", "--secrets", "/tmp/from-1password/secrets.json", "--no-prompt" });
+        Assert.Equal("setup", o.Command);
+        Assert.Equal("/tmp/from-1password/secrets.json", o.SecretsImport);
+        Assert.True(o.NoPrompt);
+    }
+
+    [Fact]
     public void WrittenJsonRoundTripsAndStartsWithTheComment()
     {
         var merge = SecretsSetup.Merge(Example, new Dictionary<string, string> { ["A"] = "x" }, new Dictionary<string, string>());

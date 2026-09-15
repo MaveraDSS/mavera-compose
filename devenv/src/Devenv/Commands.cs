@@ -54,7 +54,7 @@ public static class Commands
         Console.WriteLine("secrets");
         // Hidden input needs a real console; a redirected stdin (CI, `echo | devenv setup`) means no prompting.
         var interactive = !o.NoPrompt && !Console.IsInputRedirected;
-        var blankRequired = await SecretsSetup.RunAsync(ws, interactive);
+        var blankRequired = await SecretsSetup.RunAsync(ws, interactive, o.SecretsImport);
 
         Console.WriteLine();
         if (blankRequired.Count == 0)

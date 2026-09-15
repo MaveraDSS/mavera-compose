@@ -88,13 +88,16 @@ Open http://localhost:3002 and log in with a dev02 user (Okta email code).
    service. An existing clone is never switched; setup tells you when it is on another branch.
 2. **Frontend packages**: `corepack pnpm install --frozen-lockfile`, only when `node_modules` is missing or
    `pnpm-lock.yaml` changed since the last install (a few minutes the first time).
-3. **Secrets**: writes `secrets.json` from `secrets.example.json`. Every key there carries its 1Password
-   location as `op://k8s-secrets-dev/<item>/<field>`. With the 1Password CLI installed and signed in
-   (`op`), setup reads the values itself. Without it, setup prompts for the **required** values (five for
-   the frontend, libertine's Okta secret, the database password for `--local`) with their location, and you
-   paste them from the 1Password app; input is hidden. Optional values stay as references until someone
-   fills them, and a value already in `secrets.json` is never overwritten. Shortcut for a team: keep a filled
-   `secrets.json` as a Document in the vault and drop it into `devenv/` before running setup.
+3. **Secrets**: writes `secrets.json` from `secrets.example.json`, taking values from three sources in
+   order, and never overwriting a value already in `secrets.json`:
+   - `--secrets <file>`: another `secrets.json`, typically the filled one kept as a **Document in the
+     k8s-secrets-dev vault** (download it, point setup at it, done). A colleague's copy works the same way.
+     Dropping such a file into `devenv/` as `secrets.json` before setup works too.
+   - the 1Password CLI (`op`), when installed and signed in: every key in the example file carries its
+     location as `op://k8s-secrets-dev/<item>/<field>`.
+   - the keyboard: setup prompts for the **required** values only (five for the frontend, libertine's Okta
+     secret, the database password), with their location shown; input is hidden.
+   Optional values stay as `op://` references until someone fills them; devenv treats those as blank.
 
 `dotnet run --project src/Devenv --` is the long form while the tool is not yet published; it compiles on
 first use and takes about a second afterwards. `devenv` below stands for that prefix.
@@ -106,7 +109,7 @@ If your repos are not next to mavera-compose, or you are not on dev02, copy `dev
 
 | Command | What it does |
 |---|---|
-| `setup` | Clones missing repos, installs the frontend packages, fills `secrets.json` (1Password CLI or prompts). Idempotent. `--no-prompt` for scripts. |
+| `setup` | Clones missing repos, installs the frontend packages, fills `secrets.json` (`--secrets <file>`, 1Password CLI, or prompts). Idempotent. `--no-prompt` for scripts. |
 | `check` | Tools, repos, packages, secrets file, dev02 reachable (Zscaler), ports free. No changes. |
 | `render` | Writes libertine's `appsettings.Development.json`, the frontend `.env`, and the config of every `--local` service. `--dry-run` prints instead. |
 | `up` | `check` + `render`, starts docker infra, then the processes; waits until each answers; Ctrl+C stops the processes. `-d` leaves them running in the background and returns. |
@@ -114,7 +117,7 @@ If your repos are not next to mavera-compose, or you are not on dev02, copy `dev
 | `down` | Stops everything `up` started, including the docker infra. |
 
 Options: `--local a,b` services to run here · `--branch <name>` for repos devenv has to clone ·
-`--env dev02` · `--repos <path>` · `--no-infra` · `--allow-migrations` · `--allow-mail` · `--no-prompt` ·
+`--env dev02` · `--repos <path>` · `--no-infra` · `--allow-migrations` · `--allow-mail` · `--secrets <file>` · `--no-prompt` ·
 `--skip-preflight` · `--root <devenv folder>`.
 
 Logs: `.state/logs/<name>.log` per process, `.state/logs/devenv.log` for the background supervisor.
