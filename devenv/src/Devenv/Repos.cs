@@ -49,6 +49,14 @@ public static class Repos
         }
     }
 
+    /// <summary>The git work tree that contains this folder, if any (a repos root inside a repository means mavera-compose was cloned in the wrong place).</summary>
+    public static async Task<string?> EnclosingRepositoryAsync(string folder)
+    {
+        if (!Directory.Exists(folder)) return null;
+        var (code, output) = await ProcessRunner.RunAsync("git", new[] { "rev-parse", "--show-toplevel" }, folder, TimeSpan.FromSeconds(20));
+        return code == 0 && output.Trim().Length > 0 ? output.Trim() : null;
+    }
+
     /// <summary>Current branch of an existing clone, for the status lines; null when not a repo.</summary>
     public static async Task<string?> CurrentBranchAsync(string repoPath)
     {

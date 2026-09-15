@@ -61,6 +61,15 @@ public class ReposAndCacheGuardTests : IDisposable
     }
 
     [Fact]
+    public async Task AReposRootInsideARepositoryIsDetectedAPlainFolderIsNot()
+    {
+        // The test binary runs from inside the mavera-compose checkout; a temp folder is outside any repository.
+        Assert.NotNull(await Repos.EnclosingRepositoryAsync(AppContext.BaseDirectory));
+        Assert.Null(await Repos.EnclosingRepositoryAsync(_root));
+        Assert.Null(await Repos.EnclosingRepositoryAsync(Path.Combine(_root, "does-not-exist")));
+    }
+
+    [Fact]
     public void AClusterRedisHostIsRefused()
     {
         var m = Fixture.Manifest();

@@ -29,6 +29,14 @@ public static class Commands
         }
 
         Console.WriteLine("repos");
+        var enclosing = await Repos.EnclosingRepositoryAsync(ws.ReposRoot);
+        if (enclosing is not null)
+        {
+            throw new DevenvException(
+                $"the repos folder {ws.ReposRoot} is inside the git repository {enclosing}. devenv clones the frontend, libertine and the services " +
+                "side by side with mavera-compose, so mavera-compose must be cloned into a plain folder (for example ~/source/repos or C:\\source\\repos), " +
+                "or set reposRoot in devenv.local.json / --repos to one.");
+        }
         var plan = Repos.Plan(m, ws.ReposRoot, ws.LocalServices, o.Branch);
         await Repos.EnsureAsync(ws, plan, header: false);
         var expected = new List<(string Repo, string Branch)> { (m.Frontend.Repo, m.Frontend.Branch), (m.Gateway.Repo, m.Gateway.Branch) };
