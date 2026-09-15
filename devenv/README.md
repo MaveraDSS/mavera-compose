@@ -88,16 +88,16 @@ Open http://localhost:3002 and log in with a dev02 user (Okta email code).
    service. An existing clone is never switched; setup tells you when it is on another branch.
 2. **Frontend packages**: `corepack pnpm install --frozen-lockfile`, only when `node_modules` is missing or
    `pnpm-lock.yaml` changed since the last install (a few minutes the first time).
-3. **Secrets**: writes `secrets.json` from `secrets.example.json`, taking values from three sources in
+3. **Secrets**: writes `secrets.json` from `secrets.example.json`, taking values from two sources in
    order, and never overwriting a value already in `secrets.json`:
    - `--secrets <file>`: another `secrets.json`, typically the filled one kept as a **Document in the
      k8s-secrets-dev vault** (download it, point setup at it, done). A colleague's copy works the same way.
      Dropping such a file into `devenv/` as `secrets.json` before setup works too.
-   - the 1Password CLI (`op`), when installed and signed in: every key in the example file carries its
-     location as `op://k8s-secrets-dev/<item>/<field>`.
    - the keyboard: setup prompts for the **required** values only (five for the frontend, libertine's Okta
-     secret, the database password), with their location shown; input is hidden.
-   Optional values stay as `op://` references until someone fills them; devenv treats those as blank.
+     secret, the database password), showing where each lives in 1Password; input is hidden.
+   Every key in the example file carries its 1Password location in the `op://vault/item/field` notation;
+   that is documentation only, devenv never runs the 1Password CLI. Optional values stay as such references
+   until someone fills them, and devenv treats a reference as blank.
 
 `dotnet run --project src/Devenv --` is the long form while the tool is not yet published; it compiles on
 first use and takes about a second afterwards. `devenv` below stands for that prefix.
@@ -109,7 +109,7 @@ If your repos are not next to mavera-compose, or you are not on dev02, copy `dev
 
 | Command | What it does |
 |---|---|
-| `setup` | Clones missing repos, installs the frontend packages, fills `secrets.json` (`--secrets <file>`, 1Password CLI, or prompts). Idempotent. `--no-prompt` for scripts. |
+| `setup` | Clones missing repos, installs the frontend packages, fills `secrets.json` (`--secrets <file>` or prompts). Idempotent. `--no-prompt` for scripts. |
 | `check` | Tools, repos, packages, secrets file, dev02 reachable (Zscaler), ports free. No changes. |
 | `render` | Writes libertine's `appsettings.Development.json`, the frontend `.env`, and the config of every `--local` service. `--dry-run` prints instead. |
 | `up` | `check` + `render`, starts docker infra, then the processes; waits until each answers; Ctrl+C stops the processes. `-d` leaves them running in the background and returns. |
@@ -202,14 +202,9 @@ devenv/
   libertine started by hand from an IDE.
 - `docker FAIL` — Docker Desktop (or Colima) is not running. Start it, or `--no-infra` when you have no
   `--local` service.
-- `1Password CLI: installed but killed by the OS on start (exit 137)` (macOS), with a system dialog about
-  `op` — the Homebrew binary is blocked by the device policy (quarantine flag). setup does not need it:
-  use `--secrets <file>` or the prompts. After one failed probe setup stops starting `op`
-  (`.state/onepassword.json`); `setup --op` tries again, for example after
-  `xattr -d com.apple.quarantine "$(readlink -f "$(which op)")"` if your policy allows that.
-- A value in `secrets.json` still reads `op://...` — setup could not find it in 1Password (item or field
-  name differs, or no CLI). Paste the value in its place, or fix the reference and run setup again; devenv
-  treats such a value as blank.
+- A value in `secrets.json` still reads `op://...` — nobody has filled it yet; the text is where it lives in
+  1Password (vault/item/field). Paste the value in its place, or run `setup --secrets <file>` with a filled
+  copy; devenv treats such a value as blank.
 - Login accepts the email code and then fails — `OKTA_CLIENT_SECRET` in `secrets.json` is wrong or blank;
   the real error is in `.state/logs/frontend.log`. Restart after fixing (`down`, `up`).
 - Libertine's first proxied request after start can time out once; devenv retries, browsers just reload.

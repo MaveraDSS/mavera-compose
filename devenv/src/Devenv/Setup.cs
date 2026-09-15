@@ -146,7 +146,7 @@ public static class SecretsSetup
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
 
     /// <summary>Fills secrets.json; returns the required keys that are still blank afterwards.</summary>
-    public static async Task<List<string>> RunAsync(Workspace ws, bool interactive, string? importFile = null)
+    public static List<string> Run(Workspace ws, bool interactive, string? importFile = null)
     {
         var exampleFile = Path.Combine(ws.Root, ExampleFileName);
         if (!File.Exists(exampleFile)) throw new DevenvException($"{exampleFile} is missing");
@@ -165,7 +165,7 @@ public static class SecretsSetup
         var resolved = new Dictionary<string, string>(StringComparer.Ordinal);
         if (importFile is not null)
         {
-            // Sources in order: an imported file, then 1Password, then the keyboard. Existing values always win (Merge).
+            // Sources in order: an imported file, then the keyboard. Existing values always win (Merge).
             var fullPath = Path.GetFullPath(importFile);
             if (!File.Exists(fullPath)) throw new DevenvException($"--secrets {importFile}: file not found");
             if (string.Equals(fullPath, Path.GetFullPath(ws.SecretsFile), StringComparison.OrdinalIgnoreCase))
@@ -179,30 +179,6 @@ public static class SecretsSetup
             }
             Console.WriteLine($"  {fullPath}: {resolved.Count} value(s) imported{(importable.Count > resolved.Count ? $", {importable.Count - resolved.Count} already set here and kept" : "")}");
         }
-        var withReference = todo.Where(e => !resolved.ContainsKey(e.Key) && ReferenceFor(e, existing) is not null).ToList();
-        if (withReference.Count > 0)
-        {
-            var op = await OnePassword.ProbeAsync(ws.StateDir, ws.Options.RetryOnePassword);
-            Console.WriteLine($"  1Password CLI: {op.Detail}{(op.Ok ? "" : "; remaining values by hand or --secrets <file>")}");
-            if (op.Ok)
-            {
-                foreach (var e in withReference)
-                {
-                    var reference = ReferenceFor(e, existing)!;
-                    var read = await OnePassword.ReadAsync(reference);
-                    if (read.Value is not null)
-                    {
-                        resolved[e.Key] = read.Value;
-                        Console.WriteLine($"  {e.Key,-34} <- {reference}");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"  {e.Key,-34} {reference}: {read.Error}");
-                    }
-                }
-            }
-        }
-
         // Prompt only for what `up` cannot do without; optional values stay as references until someone needs them.
         var stillMissing = todo.Where(e => !resolved.ContainsKey(e.Key) && required.Contains(e.Key)).ToList();
         if (stillMissing.Count > 0 && interactive)
@@ -261,94 +237,6 @@ public static class SecretsSetup
         }
         return new string(chars.ToArray()).Trim();
     }
-}
-
-/// <summary>The 1Password CLI, `op`. Values are read one by one with `op read`; the desktop app integration or `op signin` provides the session.</summary>
-public static class OnePassword
-{
-    public sealed record Probe(bool Ok, string Detail);
-
-    /// <summary>.state/onepassword.json: written when the CLI turned out unusable, so later runs do not start it again (on macOS every start of a blocked binary pops up a system dialog).</summary>
-    public sealed class Marker
-    {
-        public DateTimeOffset CheckedAt { get; set; }
-        public string Detail { get; set; } = "";
-    }
-
-    public const string MarkerFileName = "onepassword.json";
-
-    /// <summary>Skip the probe when an earlier run found the CLI unusable and nobody asked to retry.</summary>
-    public static bool ShouldSkip(Marker? marker, bool retry) => marker is not null && !retry;
-
-    public static async Task<Probe> ProbeAsync(string stateDir, bool retry)
-    {
-        var markerFile = Path.Combine(stateDir, MarkerFileName);
-        var marker = ReadMarker(markerFile);
-        if (ShouldSkip(marker, retry))
-        {
-            return new Probe(false, $"skipped, found unusable on {marker!.CheckedAt:yyyy-MM-dd} ({marker.Detail}); pass --op to try again");
-        }
-
-        var probe = await ProbeNowAsync();
-        if (probe.Ok)
-        {
-            if (File.Exists(markerFile)) File.Delete(markerFile);
-        }
-        else
-        {
-            Directory.CreateDirectory(stateDir);
-            File.WriteAllText(markerFile, JsonSerializer.Serialize(new Marker { CheckedAt = DateTimeOffset.Now, Detail = probe.Detail }, Json.Options));
-        }
-        return probe;
-    }
-
-    private static Marker? ReadMarker(string file)
-    {
-        if (!File.Exists(file)) return null;
-        try { return JsonSerializer.Deserialize<Marker>(File.ReadAllText(file), Json.Options); }
-        catch (JsonException) { return null; }
-    }
-
-    private static async Task<Probe> ProbeNowAsync()
-    {
-        var cwd = Directory.GetCurrentDirectory();
-        var (code, output) = await ProcessRunner.RunAsync("op", new[] { "--version" }, cwd, TimeSpan.FromSeconds(20));
-        if (code != 0)
-        {
-            var detail = code switch
-            {
-                127 => "not installed (https://developer.1password.com/docs/cli/get-started; `brew install 1password-cli` / `winget install AgileBits.1Password.CLI`)",
-                137 => "installed but killed by the OS on start (exit 137; on macOS a quarantined Homebrew binary blocked by the device policy, see README Troubleshooting)",
-                _ => $"`op --version` failed with exit code {code}{(FirstLine(output).Length > 0 ? ": " + FirstLine(output) : "")}",
-            };
-            return new Probe(false, detail);
-        }
-        var version = FirstLine(output);
-        var (whoCode, who) = await ProcessRunner.RunAsync("op", new[] { "whoami" }, cwd, TimeSpan.FromSeconds(60));
-        if (whoCode != 0)
-        {
-            return new Probe(false, $"op {version} is installed but not signed in ({FirstLine(who)}). Turn on 'Integrate with 1Password CLI' in the 1Password app (Settings > Developer), or run `op signin`, then `devenv setup --op`");
-        }
-        var email = who.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.StartsWith("Email:", StringComparison.OrdinalIgnoreCase)) ?? FirstLine(who);
-        return new Probe(true, $"op {version}, signed in ({email})");
-    }
-
-    /// <summary>Reads one reference; the error is a short reason (item or field not found, no access) and never the value.</summary>
-    public static async Task<(string? Value, string? Error)> ReadAsync(string reference)
-    {
-        if (OpReference.TryParse(reference) is null)
-        {
-            return (null, "not a valid op://vault/item/field reference");
-        }
-        var (code, output) = await ProcessRunner.RunAsync("op", new[] { "read", "--no-newline", reference }, Directory.GetCurrentDirectory(), TimeSpan.FromSeconds(90));
-        if (code != 0)
-        {
-            return (null, FirstLine(output).Replace("[ERROR]", "").Trim());
-        }
-        return string.IsNullOrEmpty(output) ? (null, "field is empty") : (output, null);
-    }
-
-    private static string FirstLine(string s) => (s.Split('\n').FirstOrDefault(l => l.Trim().Length > 0) ?? "").Trim();
 }
 
 /// <summary>`devenv setup`, frontend part: the pnpm workspace install, only when node_modules is missing or behind the lockfile.</summary>
