@@ -202,9 +202,11 @@ devenv/
   libertine started by hand from an IDE.
 - `docker FAIL` — Docker Desktop (or Colima) is not running. Start it, or `--no-infra` when you have no
   `--local` service.
-- `1Password CLI: op --version failed with exit code 137` (macOS) — the Homebrew binary is killed by the
-  device policy (quarantine flag). setup does not need it: paste the values at the prompts, or drop a
-  filled `secrets.json` into `devenv/`.
+- `1Password CLI: installed but killed by the OS on start (exit 137)` (macOS), with a system dialog about
+  `op` — the Homebrew binary is blocked by the device policy (quarantine flag). setup does not need it:
+  use `--secrets <file>` or the prompts. After one failed probe setup stops starting `op`
+  (`.state/onepassword.json`); `setup --op` tries again, for example after
+  `xattr -d com.apple.quarantine "$(readlink -f "$(which op)")"` if your policy allows that.
 - A value in `secrets.json` still reads `op://...` — setup could not find it in 1Password (item or field
   name differs, or no CLI). Paste the value in its place, or fix the reference and run setup again; devenv
   treats such a value as blank.

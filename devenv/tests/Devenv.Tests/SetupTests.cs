@@ -145,6 +145,15 @@ public class SetupTests : IDisposable
     }
 
     [Fact]
+    public void AFailedProbeIsRememberedUntilSomeoneAsksToRetry()
+    {
+        var marker = new OnePassword.Marker { CheckedAt = DateTimeOffset.Now, Detail = "killed" };
+        Assert.True(OnePassword.ShouldSkip(marker, retry: false));
+        Assert.False(OnePassword.ShouldSkip(marker, retry: true));
+        Assert.False(OnePassword.ShouldSkip(null, retry: false));
+    }
+
+    [Fact]
     public void SecretsOptionParses()
     {
         var o = CliOptions.Parse(new[] { "setup", "--secrets", "/tmp/from-1password/secrets.json", "--no-prompt" });

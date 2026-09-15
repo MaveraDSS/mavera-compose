@@ -21,6 +21,8 @@ public sealed class CliOptions
     public bool NoPrompt { get; init; }
     /// <summary>setup: a secrets.json to import values from (a colleague's, or the one kept in 1Password as a document).</summary>
     public string? SecretsImport { get; init; }
+    /// <summary>setup: try the 1Password CLI again although an earlier run found it unusable.</summary>
+    public bool RetryOnePassword { get; init; }
     /// <summary>Hidden: this process is the background supervisor started by `up -d`.</summary>
     public bool Supervisor { get; init; }
     public List<string> RawArgs { get; } = new();
@@ -28,7 +30,7 @@ public sealed class CliOptions
     public static CliOptions Parse(string[] args)
     {
         string? command = null, env = null, repos = null, root = null, branch = null, secretsImport = null;
-        bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false, allowMigrations = false, allowMail = false, noPrompt = false;
+        bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false, allowMigrations = false, allowMail = false, noPrompt = false, retryOp = false;
         var local = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -50,6 +52,7 @@ public sealed class CliOptions
                 case "--branch": branch = Next(a); break;
                 case "--no-prompt": noPrompt = true; break;
                 case "--secrets": secretsImport = Next(a); break;
+                case "--op": retryOp = true; break;
                 case "--supervisor": supervisor = true; break;
                 default:
                     if (a.StartsWith('-')) throw new DevenvException($"unknown option {a}");
@@ -63,7 +66,7 @@ public sealed class CliOptions
         {
             Command = command, Environment = env, ReposRoot = repos, Root = root, Detach = detach,
             NoInfra = noInfra, SkipPreflight = skip, DryRun = dry, Supervisor = supervisor, AllowMigrations = allowMigrations,
-            AllowMail = allowMail, Branch = branch, NoPrompt = noPrompt, SecretsImport = secretsImport,
+            AllowMail = allowMail, Branch = branch, NoPrompt = noPrompt, SecretsImport = secretsImport, RetryOnePassword = retryOp,
         };
         o.Local.AddRange(local);
         o.RawArgs.AddRange(args);
@@ -156,6 +159,8 @@ public static class Cli
               --branch <name>           branch to check out in repos devenv has to clone for --local services
               --secrets <file>          setup: import values from another secrets.json (a colleague's, or the one
                                         kept as a document in 1Password); only fills what is still missing
+              --op                      setup: try the 1Password CLI again (after a run found it unusable, setup
+                                        stops starting it; see .state/onepassword.json)
               --no-prompt               setup: never ask for values on the console (CI, scripts); missing required
                                         secrets are listed instead
               --env <name>              remote environment (default from devenv.local.json, else dev02)
