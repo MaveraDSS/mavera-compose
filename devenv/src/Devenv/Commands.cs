@@ -6,6 +6,66 @@ namespace Devenv;
 
 public static class Commands
 {
+    // ---------------------------------------------------------------- setup
+
+    /// <summary>Everything a fresh machine needs before `up`, each step skipped when already done.</summary>
+    public static async Task<int> SetupAsync(Workspace ws, CliOptions o)
+    {
+        var m = ws.Manifest;
+        Console.WriteLine($"devenv setup  (repos in {ws.ReposRoot}, environment {ws.Environment.Name})");
+
+        Console.WriteLine("tools");
+        var tools = new[]
+        {
+            Preflight.ToolCheck("git", "git", "--version"),
+            Preflight.ToolCheck("dotnet", "dotnet", "--version"),
+            Preflight.ToolCheck("node", "node", "--version"),
+            Preflight.ToolCheck("corepack", "corepack", "--version"),
+        };
+        Preflight.Print(tools);
+        if (tools.Any(t => !t.Ok))
+        {
+            throw new DevenvException("install what is marked FAIL (README, Prerequisites), open a new terminal and run setup again");
+        }
+
+        Console.WriteLine("repos");
+        var plan = Repos.Plan(m, ws.ReposRoot, ws.LocalServices, o.Branch);
+        await Repos.EnsureAsync(ws, plan, header: false);
+        var expected = new List<(string Repo, string Branch)> { (m.Frontend.Repo, m.Frontend.Branch), (m.Gateway.Repo, m.Gateway.Branch) };
+        expected.AddRange(ws.LocalServices.Select(s => (s.Repo, o.Branch ?? s.Branch)));
+        foreach (var (repo, branch) in expected.DistinctBy(e => e.Repo))
+        {
+            var path = ws.RepoPath(repo);
+            var current = await Repos.CurrentBranchAsync(path);
+            Console.WriteLine(current == branch || plan.Any(p => p.Repo == repo)
+                ? $"  {repo,-28} {path} @ {current ?? branch}"
+                : $"  {repo,-28} {path} @ {current ?? "?"}  (devenv expects {branch}; left as is, switch with `git -C {path} checkout {branch}` if you did not mean to be elsewhere)");
+        }
+
+        Console.WriteLine("frontend packages");
+        var frontendRepo = ws.RepoPath(m.Frontend.Repo);
+        var (needed, reason) = FrontendPackages.NeedsInstall(frontendRepo);
+        Console.WriteLine($"  {reason}");
+        if (needed)
+        {
+            await FrontendPackages.InstallAsync(frontendRepo);
+        }
+
+        Console.WriteLine("secrets");
+        // Hidden input needs a real console; a redirected stdin (CI, `echo | devenv setup`) means no prompting.
+        var interactive = !o.NoPrompt && !Console.IsInputRedirected;
+        var blankRequired = await SecretsSetup.RunAsync(ws, interactive);
+
+        Console.WriteLine();
+        if (blankRequired.Count == 0)
+        {
+            Console.WriteLine("setup complete; next: `devenv up` (or `devenv check` first)");
+            return 0;
+        }
+        Console.WriteLine($"setup incomplete: {blankRequired.Count} required secret(s) still blank (see above); `devenv up` will refuse until they are set");
+        return 1;
+    }
+
     // ---------------------------------------------------------------- check
 
     public static async Task<int> CheckAsync(Workspace ws)

@@ -31,7 +31,7 @@ public static class Renderers
         var fe = ws.Manifest.Frontend;
         if (!ws.HasSecretsFile)
         {
-            throw new DevenvException($"secrets.json not found at {ws.SecretsFile}; copy secrets.example.json to secrets.json and fill it from 1Password (see README)");
+            throw new DevenvException($"secrets.json not found at {ws.SecretsFile}; run `devenv setup` (see README)");
         }
         var content = FrontendEnvRenderer.Render(new FrontendRenderInput(
             ws.Manifest, ws.Environment, ws.Secrets, ws.GatewayOrigin, ws.FrontendOrigin));

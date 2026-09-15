@@ -76,11 +76,9 @@ public sealed class Workspace
 
         var secretsFile = Path.Combine(root, "secrets.json");
         var hasSecrets = File.Exists(secretsFile);
-        var secrets = hasSecrets
-            ? Json.Load<Dictionary<string, string>>(secretsFile)
-                .Where(kv => !kv.Key.StartsWith('_'))
-                .ToDictionary(kv => kv.Key, kv => kv.Value ?? "", StringComparer.Ordinal)
-            : new Dictionary<string, string>(StringComparer.Ordinal);
+        // An op://vault/item/field value is a pointer `devenv setup` could not resolve, not a secret: treat it as blank.
+        var secrets = SecretsSetup.ReadExisting(secretsFile)
+            .ToDictionary(kv => kv.Key, kv => SecretsSetup.IsUnresolved(kv.Value) ? "" : kv.Value, StringComparer.Ordinal);
 
         var reposRoot = Path.GetFullPath(local.ReposRoot ?? Path.Combine(root, "..", ".."));
         var developer = local.DeveloperName ?? System.Environment.UserName;
@@ -136,15 +134,29 @@ public sealed class Workspace
     public string DotnetHostFor(ServiceSpec service) => service.RequiresX64 && IsArm64 ? DotnetX64Path : "dotnet";
     public string GatewayOrigin => $"http://localhost:{Manifest.Gateway.Port}";
 
+    /// <summary>Secrets `up` cannot do without: the frontend's required ones, libertine's Okta secret, and every required service placeholder.</summary>
+    public HashSet<string> RequiredSecretKeys
+    {
+        get
+        {
+            var keys = new HashSet<string>(Manifest.Frontend.Secrets.Required, StringComparer.Ordinal) { Manifest.Gateway.OktaInternalSecretKey };
+            foreach (var s in Manifest.Placeholders.Secrets.Values.Where(s => s.Required))
+            {
+                keys.Add(s.Key);
+            }
+            return keys;
+        }
+    }
+
     public string RequireSecret(string key)
     {
         if (!HasSecretsFile)
         {
-            throw new DevenvException($"secrets.json not found at {SecretsFile}; copy secrets.example.json to secrets.json and fill it from 1Password (see README)");
+            throw new DevenvException($"secrets.json not found at {SecretsFile}; run `devenv setup` (see README)");
         }
         if (!Secrets.TryGetValue(key, out var value) || string.IsNullOrWhiteSpace(value))
         {
-            throw new DevenvException($"secret '{key}' is missing or blank in {SecretsFile}; see secrets.example.json for where it comes from");
+            throw new DevenvException($"secret '{key}' is missing or blank in {SecretsFile}; run `devenv setup`, or see secrets.example.json for where it lives in 1Password");
         }
         return value;
     }

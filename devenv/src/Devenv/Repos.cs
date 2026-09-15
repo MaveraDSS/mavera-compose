@@ -32,10 +32,10 @@ public static class Repos
         plan.Add(new ClonePlan(repo, path, branch, reason));
     }
 
-    public static async Task EnsureAsync(Workspace ws, IReadOnlyList<ClonePlan> plan)
+    public static async Task EnsureAsync(Workspace ws, IReadOnlyList<ClonePlan> plan, bool header = true)
     {
         if (plan.Count == 0) return;
-        Console.WriteLine("clone");
+        if (header) Console.WriteLine("clone");
         foreach (var p in plan)
         {
             var url = ws.Manifest.GitBase.TrimEnd('/') + "/" + p.Repo + ".git";

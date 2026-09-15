@@ -22,7 +22,7 @@ public static class FrontendEnvRenderer
             .ToList();
         if (missing.Count > 0)
         {
-            throw new DevenvException($"frontend secrets missing or blank in secrets.json: {string.Join(", ", missing)} (see secrets.example.json for the 1Password source)");
+            throw new DevenvException($"frontend secrets missing or blank in secrets.json: {string.Join(", ", missing)} (run `devenv setup`, or see secrets.example.json for the 1Password location)");
         }
 
         var lines = new List<(string Key, string Value)>

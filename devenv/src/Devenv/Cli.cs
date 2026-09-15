@@ -17,6 +17,8 @@ public sealed class CliOptions
     public bool AllowMail { get; init; }
     /// <summary>Branch to check out in repos devenv clones for --local services.</summary>
     public string? Branch { get; init; }
+    /// <summary>setup: never prompt on the console for missing secrets.</summary>
+    public bool NoPrompt { get; init; }
     /// <summary>Hidden: this process is the background supervisor started by `up -d`.</summary>
     public bool Supervisor { get; init; }
     public List<string> RawArgs { get; } = new();
@@ -24,7 +26,7 @@ public sealed class CliOptions
     public static CliOptions Parse(string[] args)
     {
         string? command = null, env = null, repos = null, root = null, branch = null;
-        bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false, allowMigrations = false, allowMail = false;
+        bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false, allowMigrations = false, allowMail = false, noPrompt = false;
         var local = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -44,6 +46,7 @@ public sealed class CliOptions
                 case "--allow-migrations": allowMigrations = true; break;
                 case "--allow-mail": allowMail = true; break;
                 case "--branch": branch = Next(a); break;
+                case "--no-prompt": noPrompt = true; break;
                 case "--supervisor": supervisor = true; break;
                 default:
                     if (a.StartsWith('-')) throw new DevenvException($"unknown option {a}");
@@ -57,7 +60,7 @@ public sealed class CliOptions
         {
             Command = command, Environment = env, ReposRoot = repos, Root = root, Detach = detach,
             NoInfra = noInfra, SkipPreflight = skip, DryRun = dry, Supervisor = supervisor, AllowMigrations = allowMigrations,
-            AllowMail = allowMail, Branch = branch,
+            AllowMail = allowMail, Branch = branch, NoPrompt = noPrompt,
         };
         o.Local.AddRange(local);
         o.RawArgs.AddRange(args);
@@ -92,6 +95,7 @@ public static class Cli
             var ws = Workspace.Load(options);
             return options.Command switch
             {
+                "setup" => await Commands.SetupAsync(ws, options),
                 "up" => await Commands.UpAsync(ws, options),
                 "down" => await Commands.DownAsync(ws),
                 "status" => await Commands.StatusAsync(ws),
@@ -128,6 +132,9 @@ public static class Cli
             usage: devenv <command> [options]
 
             commands
+              setup     first time on a machine: clone the missing repos, install the frontend packages, fill
+                        secrets.json (from 1Password through `op` when signed in, otherwise by prompting for
+                        the required values); re-running only does what is still missing
               check     preflight only: tools, repos, VPN, ports, secrets
               render    write libertine's appsettings.Development.json, the frontend .env and the config of every
                         --local service (no start)
@@ -144,6 +151,8 @@ public static class Cli
               --allow-mail              up: start a service that sends mail (notification-service); every message
                                         goes to MAIL_TEST_ADDRESS from secrets.json, never to real users
               --branch <name>           branch to check out in repos devenv has to clone for --local services
+              --no-prompt               setup: never ask for values on the console (CI, scripts); missing required
+                                        secrets are listed instead
               --env <name>              remote environment (default from devenv.local.json, else dev02)
               --repos <path>            folder holding the cloned repos (default: parent of mavera-compose)
               -d, --detach              up: leave everything running in the background and return

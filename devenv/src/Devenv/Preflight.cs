@@ -25,7 +25,7 @@ public static class Preflight
         results.Add(RepoCheck("libertine repo", ws.RepoPath(m.Gateway.Repo), m.Gateway.ConfigTemplate));
         var nodeModules = Path.Combine(ws.RepoPath(m.Frontend.Repo), "node_modules");
         results.Add(new PreflightResult("frontend packages", Directory.Exists(nodeModules),
-            Directory.Exists(nodeModules) ? "node_modules present" : $"run `corepack pnpm install --frozen-lockfile` in {ws.RepoPath(m.Frontend.Repo)}"));
+            Directory.Exists(nodeModules) ? "node_modules present" : $"no node_modules in {ws.RepoPath(m.Frontend.Repo)}; run `devenv setup`"));
         foreach (var s in ws.LocalServices)
         {
             results.Add(s.Project is null
@@ -50,7 +50,7 @@ public static class Preflight
 
         results.Add(ws.HasSecretsFile
             ? new PreflightResult("secrets", true, ws.SecretsFile)
-            : new PreflightResult("secrets", false, $"copy secrets.example.json to secrets.json and fill it (README)"));
+            : new PreflightResult("secrets", false, $"no {ws.SecretsFile}; run `devenv setup` (README, First-time setup)"));
 
         results.Add(await ConnectivityCheckAsync(ws.Environment));
         if (ws.LocalServices.Count > 0)
@@ -98,7 +98,7 @@ public static class Preflight
         }
     }
 
-    private static PreflightResult ToolCheck(string name, string file, params string[] args)
+    public static PreflightResult ToolCheck(string name, string file, params string[] args)
     {
         try
         {
