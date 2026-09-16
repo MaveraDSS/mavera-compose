@@ -1,14 +1,18 @@
 # Deploying the Mavera stack to Dokploy on AWS
 
-Step-by-step, from an empty AWS account to 29 services running behind one gateway domain.
+Step-by-step, from an empty AWS account to 29 services running behind one gateway domain, with
+pull-request preview deployments on the repos that want them.
+
+Infrastructure is deployed as one Dokploy Compose service; each application service is its own Dokploy
+Application. README *Topology on Dokploy* explains why, and the reasoning matters for phases 4 and 8.
 
 Two credentials are involved and they are **not** the same thing — mixing them up is the most common
 setup mistake:
 
 | Credential | Used by | For |
 |---|---|---|
-| **Dokploy ↔ GitHub connection** | Dokploy | cloning *this* repo (the compose file) |
-| **`GH_PAT`** env var | BuildKit, during the build | cloning the *29 service* repos, which are the build contexts |
+| **Dokploy ↔ GitHub connection** | Dokploy | cloning *this* repo for the infra compose file, **and** cloning each of the 29 service repos to build their Applications. Must be the GitHub App, installed on `MaveraDSS` — preview deployments do not work with any other provider. |
+| **`GH_PAT`** env var | BuildKit, local builds only | cloning the *29 service* repos as Compose build contexts. Dokploy does not use it: the GitHub App authenticates the clone (Phase 8b). |
 
 ---
 
@@ -123,19 +127,28 @@ docker network ls | grep dokploy-network
 
 ---
 
-## Phase 4 — Create the Compose application
+## Phase 4 — Create the infrastructure compose service
+
+Only infrastructure is deployed as Compose. The 29 application services become separate Dokploy
+Applications in Phase 8, which is what gives them preview deployments — see README *Topology on
+Dokploy*.
 
 In the Dokploy UI:
 
-1. **Create → Compose**.
+1. **Create → Compose**. Name it `mavera-infra`.
 2. **General → Provider**: choose **GitHub** and complete the GitHub connection when prompted (it
    installs a GitHub App). Select `MaveraDSS/mavera-compose`, branch `main`.
    *Alternative:* provider **Git** with the SSH URL and a deploy key, if you would rather not install
-   the app.
-3. **Compose Type**: **`Docker Compose`** — **not `Stack`**. Swarm mode does not support `build`, and
-   all 29 services build from source.
-4. **Compose Path**: `./docker-compose.yml`
-5. Save. **Do not deploy yet** — environment variables come first.
+   the app. Note that Phase 8 **does** require the GitHub App, on the `MaveraDSS` org.
+3. **Compose Type**: **`Docker Compose`** — **not `Stack`**. `docker stack deploy` renames services to
+   `<appName>_sqlserver`, and the Applications resolve these by their plain names.
+4. **Compose Path**: `./docker-compose.infra.yml`
+5. **Advanced → Isolated Deployments: off.** It would move the stack onto a private network and off
+   `dokploy-network`, which is the one thing this whole topology depends on.
+6. Save. **Do not deploy yet** — environment variables come first.
+
+> The old single-app setup used `./docker-compose.yml` with `COMPOSE_PROFILES`. That file is still in
+> the repo and still works for local development, but it is not what Dokploy deploys any more.
 
 ---
 
@@ -149,7 +162,7 @@ Paste the contents of `.env.example` into the **Environment** tab and fill in th
 
 | Variable | Value | Notes |
 |---|---|---|
-| `GH_PAT` | a GitHub token | **read-only**, scoped to the 29 `MaveraDSS/*` repos. This is the build-context credential, not the Dokploy connection. |
+| `GH_PAT` | *(leave blank on Dokploy)* | only needed for local `docker compose` builds. On Dokploy the GitHub App clones the service repos (Phase 8b), so nothing reads this. |
 | `GATEWAY_HOST` | e.g. `mavera.example.com` | public gateway domain — see *Choosing the hostnames* |
 | `IDENTITY_HOST` | e.g. `identity.example.com` | identity server domain — **must differ from `GATEWAY_HOST`** |
 | `PUBLIC_SCHEME` | `http` or `https` | `https` once the domains have certificates. Feeds `IdentityServer_IssuerUri`. |
@@ -178,8 +191,8 @@ service and a token-endpoint error in Seq, not a startup crash.
 
 | Variable | Default | Why |
 |---|---|---|
-| `COMPOSE_PARALLEL_LIMIT` | `2` | **29 concurrent `dotnet build` runs will OOM the VM.** The likeliest cause of a failed first deploy. |
-| `COMPOSE_PROFILES` | *(empty)* | empty = infrastructure only. Phase 6 relies on this. |
+| `COMPOSE_PARALLEL_LIMIT` | `2` | local only. The infra stack builds nothing, and Dokploy builds the Applications one at a time. |
+| `COMPOSE_PROFILES` | *(empty)* | local only. The infra stack has no profiles; every service in it always starts. |
 | `MSSQL_MEMORY_LIMIT_MB` | `2048` | caps SQL Server so it cannot starve the 29 services. Raise to ~6144 on a 32 GB box once things are stable. |
 | `SQL_RESTORE_ENABLED` | `true` | restores the three data-bearing databases from `Databases.zip` on first deploy (Phase 7) |
 | `SQL_RESTORE_FORCE` | `false` | **destructive.** `true` re-restores over the live databases on every deploy |
@@ -210,7 +223,11 @@ ls -la .env && grep -E '^(GATEWAY_HOST|IDENTITY_HOST|MINIO_PASS)=' .env
 docker compose config >/dev/null && echo "interpolation OK"
 ```
 
-`COMPOSE_PROFILES` belongs in this same set of variables — it is what selects which services deploy.
+Only the ~15 infrastructure knobs are actually read by `docker-compose.infra.yml` (`DB_PASS`, the
+`MONGO_*`, `RABBITMQ_*` and `MINIO_*` pairs, `BUCKET_ASSETS`, `BUCKET_DOCUMENTS`, `SEQ_ADMIN_PASS`,
+`MSSQL_MEMORY_LIMIT_MB`, `SQL_RESTORE_ENABLED`, `SQL_RESTORE_FORCE`, `SQLSERVER_IMAGE`). Paste the whole
+file anyway: `generate-manifest.py` reads the same `.env` in Phase 8c to resolve the 169 placeholders,
+and keeping one copy is what stops the two halves drifting.
 
 #### Fallback: an env file you control
 
@@ -348,16 +365,16 @@ on them will not work; OCR and PDF generation in particular need a valid Apryse 
 
 ## Phase 6 — First deploy: infrastructure only
 
-With `COMPOSE_PROFILES` empty, press **Deploy**. This starts 8 containers and 4 init jobs and builds
-nothing. Budget **5–10 minutes** on the first deploy: `mssql-backups-init` unpacks ~300 MB of backups
+Press **Deploy**. `docker-compose.infra.yml` has no profiles: this starts 8 long-running containers
+plus 4 init jobs, and builds nothing. Budget **5–10 minutes** on the first deploy: `mssql-backups-init` unpacks ~300 MB of backups
 and `mssql-init` restores all three databases before it exits. Later deploys skip both and take a
 couple of minutes.
 
 Expected result — via SSH on the VM:
 
 ```bash
-cd /etc/dokploy/compose/<app-name>/code     # Dokploy shows the exact path in the UI
-docker compose ps
+cd /etc/dokploy/compose/<infra-app-name>/code   # Dokploy shows the exact path in the UI
+docker compose -f docker-compose.infra.yml ps
 ```
 
 | Service | Expected |
@@ -443,7 +460,7 @@ docker compose up -d --force-recreate mssql-init && docker compose logs -f mssql
 | `[skip] <db> - no backup matching <db>*.bak` | The zip does not contain a file whose name starts with that database name. The database is then created empty by the next step. |
 | `no backup directory at /var/opt/mssql/backups` | The `mssql-backups` volume is not mounted into `mssql-init`. Both it and `sqlserver` need it, at that same path. |
 | `no Databases.zip in the project directory` | The zip was not committed, or Dokploy cloned before it was pushed. |
-| `RESTORE ... could not be opened. Operating system error 5` | Permissions on the backup volume. `sqlserver` runs as root and mounts it read-only; check `docker compose exec sqlserver ls -la /var/opt/mssql/backups`. |
+| `RESTORE ... could not be opened. Operating system error 5` | Permissions on the backup volume. `sqlserver` runs as root and mounts it read-only; check `docker compose -f docker-compose.infra.yml exec sqlserver ls -la /var/opt/mssql/backups`. |
 | Restore runs on every deploy | `SQL_RESTORE_FORCE` was left at `true`. |
 
 ### Using an existing SQL instance instead
@@ -453,27 +470,157 @@ nothing is written to that instance.
 
 ---
 
-## Phase 8 — Deploy the services, profile by profile
+## Phase 8 — Provision and deploy the 29 Applications
 
-Do **not** jump straight to `all`. One group at a time keeps peak memory down and makes any failure
-attributable.
+Infrastructure is up and the SQL restore is verified before this starts. Applications have no
+`depends_on`, so anything deployed before infrastructure answers will crash-loop until it does.
 
-For each step: set `COMPOSE_PROFILES` in the Environment tab, press **Deploy**, wait, then check
-`docker compose ps` for restart loops before moving on.
+### 8a. Put the entrypoint script on the host
 
-| Step | `COMPOSE_PROFILES` | Services | Notes |
-|---|---|---|---|
-| 1 | `platform` | 13 | identity server, user service, gateway, audit, … |
-| 2 | `platform,evaluation` | +3 | evaluation service, EPV, fkassan |
-| 3 | `platform,evaluation,documents` | +5 | document/storage/OCR/PDF/file-conversion |
-| 4 | `all` | 29 | adds the 8 AI orchestrators |
+Every app image's ENTRYPOINT is replaced with `envsubst`-then-`dotnet` (README *How configuration
+works*). Compose bind-mounted `config/entrypoint.sh` for that; Applications need it on the host:
 
-**The first build is long.** Five .NET SDK majors (6.0, 7.0, 8.0, 9.0, 10.0) in alpine *and* Debian
-variants get pulled, and 29 projects compile. Budget an hour or more for step 1, then much less —
-BuildKit caches git contexts by resolved commit, so unchanged repos are not rebuilt.
+```bash
+sudo install -d -m 755 /etc/dokploy/mavera
+# Phase 4 already cloned this repo onto the host, so copy it from there.
+# (mavera-compose is private, so curl from raw.githubusercontent.com will not work.)
+sudo cp /etc/dokploy/compose/<infra-app-name>/code/config/entrypoint.sh \
+        /etc/dokploy/mavera/entrypoint.sh
+sudo chmod 644 /etc/dokploy/mavera/entrypoint.sh
+head -1 /etc/dokploy/mavera/entrypoint.sh      # expect: #!/bin/sh
+```
 
-> **Never** run `docker builder prune`, and do not put it in a cron job. It wipes the cache and forces
-> a full 29-service rebuild on the next deploy.
+It stays 644 on purpose — the provisioner sets the Run Command to `/bin/sh /entrypoint.sh` rather than
+executing it, because Dokploy never marks mounted files executable.
+
+If the Docker host is a Swarm with more than one node, put the file on every node, or add a placement
+constraint pinning the Applications to the node that has it. A bind-mount source that does not exist is
+silently created by Docker **as a directory**.
+
+### 8b. Connect the GitHub App to the org
+
+**Settings → Git Providers → GitHub**, installed on `MaveraDSS` with access to the 29 service repos.
+Preview deployments only run for `sourceType: github`, so this is required, not optional. `GH_PAT` is no
+longer used for builds.
+
+### 8c. Generate the manifest
+
+From a checkout of this repo, with a `.env` whose required variables are filled in:
+
+```bash
+python scripts/dokploy/generate-manifest.py
+```
+
+Expect `29 application services`, `170 keys each`, and the 12 infrastructure services listed as left to
+`docker-compose.infra.yml`. This reads `docker compose config`, so anything it reports is exactly what
+the Compose file says — no second copy of the placeholder list to keep in sync.
+
+`build/dokploy/env/*.env` now holds **resolved secrets**. It is gitignored; keep it that way.
+
+### 8d. Dry run, then one service
+
+```bash
+export DOKPLOY_URL=https://dokploy.example.com
+export DOKPLOY_API_KEY=...            # Settings -> Profile -> API/CLI
+
+python scripts/dokploy/provision.py --list
+python scripts/dokploy/provision.py --only mavera-audit          # prints every API call
+python scripts/dokploy/provision.py --only mavera-audit --apply
+```
+
+`mavera-audit` is the right pilot: it is the one service verified end to end on the old setup, and it
+needs Mongo and RabbitMQ but not SQL, so a SQL problem cannot confuse the result.
+
+Deploy it from the UI and read the logs. The line that matters:
+
+```
+[entrypoint] appsettings.json rendered; starting Mavera-Audit.dll
+```
+
+A `[entrypoint] WARNING: unrendered placeholders remain` block names exactly which variables are
+missing from the Dokploy environment — it doubles as the completeness check. If instead you see the app
+start without that line at all, the Run Command did not take effect and nothing has been rendered.
+
+Then confirm the two things the whole topology rests on, from inside the container (Dokploy's terminal):
+
+```sh
+getent hosts sqlserver mongo redis minio otel-collector gotenberg seq
+getent hosts rabbitmq rabbitmq.rabbitmq.svc.cluster.local
+getent hosts mavera-audit.svc.cluster.local     # its own alias, from a sibling
+```
+
+### 8e. The rest
+
+```bash
+python scripts/dokploy/provision.py                # dry run, all 29
+python scripts/dokploy/provision.py --apply
+```
+
+Then deploy from the UI in this order, so each group comes up against something that already answers:
+
+| Step | Services |
+|---|---|
+| 1 | `mavera-identity-server`, `mavera-identity-client`, `mavera-user-service` |
+| 2 | the remaining 10 platform services |
+| 3 | evaluation (3), then documents (5) |
+| 4 | the 8 AI orchestrators |
+| 5 | `mavera-libertine` last — the gateway is only useful once its targets resolve |
+
+**The first build of each Application is long.** Five .NET SDK majors (6.0, 7.0, 8.0, 9.0, 10.0) across
+alpine and Debian variants get pulled. Dokploy builds Applications one at a time, which is slower than
+the old `COMPOSE_PARALLEL_LIMIT=2` but cannot OOM the VM the way 29 concurrent builds could.
+
+> **Never** run `docker builder prune`, and do not put it in a cron job. It wipes the layer cache and
+> forces every Application to rebuild from scratch.
+
+`provision.py` records each Application's generated `appName` in `build/dokploy/state.json`. Dokploy
+appends a random suffix and never changes it, so that file is the only place those names are written
+down — keep it, or re-derive it with `--list`.
+
+---
+
+## Phase 8.5 — Turn on preview deployments
+
+Opt in per repo. Each enabled repo costs up to `--preview-limit` containers plus a .NET SDK build on the
+same VM.
+
+```bash
+python scripts/dokploy/provision.py --role preview --only mavera-audit \
+  --preview-wildcard '*.preview.example.com' --apply
+```
+
+This creates a **second** Application, `mavera-audit-pr`, which is never deployed itself — it exists
+only to spawn previews, and it carries **no network aliases**. That separation is the point: previews
+inherit their parent's aliases, so a preview of the production Application would answer to
+`mavera-audit.svc.cluster.local` and take roughly half of production's internal traffic. See README
+*Why two Applications per repo*.
+
+Add a wildcard DNS A record for `*.preview.example.com` → the Elastic IP. Omit `--preview-wildcard` and
+Dokploy falls back to `sslip.io`, which needs no DNS at all but gives out ugly, public hostnames.
+
+Then verify the behaviour, not just the setup:
+
+1. Open a PR on `MaveraDSS/mavera-audit` **targeting the branch the Application is configured with**
+   (`develop` for audit). A PR against any other base branch produces no preview — that is the match
+   condition, and it is also why the production Applications keep previews off.
+2. A preview URL appears on the `mavera-audit-pr` Application. Hit it.
+3. Push a second commit to the same PR. The **same** URL rebuilds in place — appName and domain are
+   stable for the life of the PR.
+4. The check that matters, from a third container while the preview is running:
+
+   ```sh
+   getent hosts mavera-audit.svc.cluster.local     # must return exactly ONE address
+   ```
+
+   More than one means the preview is claiming a production name — stop and re-check that the preview
+   host's Swarm network setting has no `Aliases`.
+5. Close the PR. The preview, its Traefik config and its files are removed.
+
+**Previews share production data.** They point at the same SQL Server, Mongo and RabbitMQ as
+production. A PR carrying an EF migration or a destructive seed will hit real data, and a preview that
+consumes a named RabbitMQ queue will steal messages from its production twin. That was the deliberate
+trade-off in choosing single-service previews; if it bites, the next step is a per-preview SQL catalog /
+Mongo database / RabbitMQ vhost driven off `${{DOKPLOY_DEPLOY_URL}}` in the preview environment.
 
 ---
 
@@ -487,43 +634,87 @@ BuildKit caches git contexts by resolved commit, so unchanged repos are not rebu
    identity.example.com   A   <elastic-ip>
    ```
 
-2. In Dokploy → **Domains**, add a domain for service **`mavera-libertine`**, container port **80**,
-   and enable HTTPS / Let's Encrypt. Repeat for **`mavera-identity-server`**.
+2. `provision.py` already created both domains, if `GATEWAY_HOST` and `IDENTITY_HOST` were set in its
+   environment when it ran:
 
-   Letting the UI own the domain means Dokploy manages the certificate. The compose file already
-   carries working HTTP Traefik labels and both services join `dokploy-network`; commented `websecure`
-   labels are in the file if you would rather declare TLS yourself (match your own `certResolver`).
+   ```bash
+   GATEWAY_HOST=mavera.example.com IDENTITY_HOST=identity.example.com \
+     python scripts/dokploy/provision.py --only mavera-libertine --only mavera-identity-server --apply
+   ```
 
-3. Once the certificates are issued, set `PUBLIC_SCHEME=https` and redeploy so the identity server
-   advertises an issuer that matches what browsers actually reach.
+   Otherwise add them by hand: Dokploy → the Application → **Domains**, container port **80**, HTTPS
+   with Let's Encrypt. Either way Dokploy owns the certificate and writes the Traefik config; the
+   Applications carry no labels of their own.
+
+   The two hosts **must differ** — they are distinct `Host()` rules.
+
+3. If you are using previews with a custom wildcard, add that record too:
+
+   ```
+   *.preview.example.com  A   <elastic-ip>
+   ```
+
+4. Once the certificates are issued, set `PUBLIC_SCHEME=https` in `.env`, then regenerate and
+   re-provision so the identity server advertises an issuer that matches what browsers actually reach:
+
+   ```bash
+   python scripts/dokploy/generate-manifest.py
+   python scripts/dokploy/provision.py --apply
+   ```
+
+   Then redeploy `mavera-identity-server` and `mavera-libertine`. Skipping this leaves
+   `IdentityServer_IssuerUri` on `http://`, and clients reject the mismatch.
 
 `mavera-libertine` is a YARP gateway whose routing table configures itself from the same placeholder
-set, so it fronts the FE-facing surface with no extra wiring. The other 27 services stay internal.
+set, so it fronts the FE-facing surface with no extra wiring. The other 27 services stay internal, and
+reachable only through the network aliases — which is why Phase 10 checks those first.
 
 ---
 
 ## Phase 10 — Verify
 
+The application services are Swarm services now, not Compose services, so `docker compose exec` only
+reaches the infrastructure stack. For an Application, use Dokploy's built-in terminal, or find its task
+container by the `appName` in `build/dokploy/state.json`:
+
 ```bash
-# 1. everything is up, nothing restarting
-docker compose ps
+APP=$(docker ps --filter "name=mavera-audit-" --format '{{.Names}}' | head -1)
+```
 
-# 2. the in-cluster DNS trick everything depends on
-docker compose exec mavera-audit getent hosts rabbitmq.rabbitmq.svc.cluster.local
-docker compose exec mavera-audit getent hosts mavera-user-service.svc.cluster.local
+```bash
+# 1. infrastructure is up, nothing restarting
+cd /etc/dokploy/compose/<infra-app-name>/code
+docker compose -f docker-compose.infra.yml ps
 
-# 3. config really rendered — no "$" literals should appear
-docker compose exec mavera-audit sh -c 'grep -E "Host|Endpoint" /app/appsettings.json'
+# 2. the Applications are running and converged
+docker service ls | grep mavera
 
-# 4. message bus connected: queues should exist
-docker compose exec rabbitmq rabbitmqctl list_queues name messages
+# 3. infrastructure DNS, from inside an Application
+docker exec "$APP" getent hosts sqlserver mongo redis minio otel-collector gotenberg seq
+docker exec "$APP" getent hosts rabbitmq rabbitmq.rabbitmq.svc.cluster.local
 
-# 5. telemetry flowing (accepted == sent, no failures)
-docker run --rm --network <project>_mavera curlimages/curl:latest -s \
+# 4. app-to-app aliases — BOTH forms must resolve, or service discovery is broken
+docker exec "$APP" getent hosts mavera-user-service
+docker exec "$APP" getent hosts mavera-user-service.svc.cluster.local
+
+# 5. and they must answer, not just resolve
+docker exec "$APP" wget -qO- http://mavera-user-service/Vera/UserService/health
+
+# 6. config really rendered — no "$" literals should appear
+docker exec "$APP" sh -c 'grep -E "Host|Endpoint" /app/appsettings.json'
+
+# 7. message bus connected: queues should exist
+docker compose -f docker-compose.infra.yml exec rabbitmq rabbitmqctl list_queues name messages
+
+# 8. telemetry flowing (accepted == sent, no failures)
+docker run --rm --network dokploy-network curlimages/curl:latest -s \
   http://otel-collector:8888/metrics | grep -E 'otelcol_(receiver_accepted|exporter_sent)_spans'
 
-# 6. the gateway answers
+# 9. the gateway answers, and the route table works.
+#    401 is the PASS here: the route matched and the target rejected the empty token.
+#    404 means no route; 502/503 means the target is down or lost its alias.
 curl -I https://mavera.example.com
+curl -s -o /dev/null -w '%{http_code}\n' https://mavera.example.com/libertine/case/1
 ```
 
 Logs for all services land in **Seq** — add a Dokploy domain for the `seq` service (port 80) and log in
@@ -536,8 +727,8 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | Symptom | Cause / fix |
 |---|---|
 | Build fails `failed to evaluate path "https://…"` | Compose is resolving the git URL as a local path. Known on **Windows** Compose; the Linux host is fine. Check `docker compose version`. |
-| Build fails cloning a service repo | `GH_PAT` missing, expired, or not scoped to that repo. |
-| VM OOMs mid-build | `COMPOSE_PARALLEL_LIMIT` was raised or dropped. Set it back to `2` and deploy one profile at a time. |
+| Build fails cloning a service repo | The Dokploy GitHub App is not installed on that repo. Re-check Phase 8b; `GH_PAT` is not involved. |
+| VM OOMs mid-build | Too much building at once: an Application build plus one or more previews. Lower `--preview-limit`, or move builds to a Dokploy Build Server. |
 | `Stack` selected instead of `Docker Compose` | Swarm does not support `build`; recreate the app with the right Compose Type. |
 | Config arrives as literal `$Placeholder` | The entrypoint was overridden, or a variable is missing from `x-placeholders`. `docker compose logs <svc>` prints any unrendered names. |
 | `UriFormatException` at startup | `Tracing_Connection_String` empty or not absolute. It must be `http://otel-collector:4317`. |
@@ -548,18 +739,35 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | Gateway and identity server serve each other's responses | `GATEWAY_HOST` and `IDENTITY_HOST` are the same value; the two Traefik routers collide. |
 | `Invalid object name 'dbo.X'` | The database is empty — the restore was skipped or `DB_SERVER` points somewhere unpopulated. Check `docker compose logs mssql-init` for `[ok]`/`[MISSING]`. |
 | `mssql-init` exits non-zero on a restore | Deliberate: nothing starts on half-restored data. See Phase 7, *If a restore fails*. |
-| Deploy stalls on `Pulling … unauthorized` | `pull_policy: build` was removed from `x-service-base`; Compose is trying ACR instead of building. |
+| Deploy stalls on `Pulling … unauthorized` | Local only: `pull_policy: build` was removed from `x-service-base`, so Compose is trying ACR instead of building. |
 | SQL Server eating all RAM | `MSSQL_MEMORY_LIMIT_MB` only applies at first-run setup; `mssql-init` re-applies it via `sp_configure` on every run — re-run it. |
+| App starts but reads literal `$Placeholder` values | The Run Command did not take effect, so `envsubst` never ran. Check Advanced → Run Command is `/bin/sh /entrypoint.sh`. |
+| `/entrypoint.sh: not found`, or it is a directory | The bind-mount source is missing on the node the task landed on. See Phase 8a. |
+| A service resolves to two addresses | A preview is claiming a production alias. The preview-host Application must have **no** `Aliases` in its Swarm network setting. See README *Why two Applications per repo*. |
+| 502/503 from the gateway for one service | That Application lost its alias, or was provisioned without one. Re-run `provision.py --only <svc> --apply`. |
+| A PR opens but no preview appears | The PR's **base** branch must equal the preview-host Application's configured branch, previews must be active on it, and the author needs write access to the repo. |
 | `storage-service` / `mavera-ocr` fail on queries | `MaveraStorageOperations` / `MaveraOcrOperations` are empty; no backup was supplied for them. |
 
 ---
 
 ## Ongoing
 
-- **Redeploys** rebuild only service repos whose branch head moved. Keep the build cache.
-- **Bumping to the next release branch**: set `BRANCH`, and first re-check which repos still need
-  `BRANCH_FALLBACK`. Anything listed has not cut the branch; anything that has dropped off the list
-  can move back onto `${BRANCH}` in `docker-compose.yml`:
+- **Redeploys.** Each Application redeploys on its own, on push to its configured branch (auto-deploy
+  is on for the production Applications). Keep the build cache.
+- **Configuration changes** start in `docker-compose.yml` — it is still the source of truth for the
+  `$Placeholder` values. Edit `x-placeholders` or `.env`, then:
+
+  ```bash
+  python scripts/dokploy/generate-manifest.py
+  python scripts/dokploy/provision.py                    # dry run
+  python scripts/dokploy/provision.py --apply            # pushes the new env to all 29
+  ```
+
+  Then redeploy the affected Applications. Re-run the `--role preview --only <svc>` calls too, since a
+  preview's environment is a separate copy rather than a merge.
+- **Bumping to the next release branch**: set `BRANCH` in `.env`, and first re-check which repos still
+  need `BRANCH_FALLBACK`. Anything listed has not cut the branch; anything that has dropped off the
+  list can move back onto `${BRANCH}` in `docker-compose.yml`:
 
   ```bash
   REL='release%2Fv.be-2026-04-01'   # url-encode the '/'
@@ -567,11 +775,19 @@ as `admin` with `SEQ_ADMIN_PASS`.
     gh api "repos/$r/branches/$REL" >/dev/null 2>&1 || echo "fallback: $r"
   done
   ```
-- **Webhooks**: Dokploy can auto-deploy on push to this repo. Note that it re-clones the compose repo,
-  not the service repos — those are re-resolved by BuildKit at build time.
-- **Backups**: named volumes (`sqlserver-data`, `mongo-data`, `minio-data`, `rabbitmq-data`,
-  `redis-data`, `seq-data`) support Dokploy's scheduled S3 volume backups.
+
+  Then regenerate and re-provision as above — `provision.py` reads the branch out of the manifest, so
+  the Applications follow `docker-compose.yml` rather than needing 29 edits in the UI.
+- **Adding a service.** Add it to `docker-compose.yml` as usual, regenerate, and
+  `provision.py --only <name> --apply`. Nothing else is hand-written.
+- **`build/dokploy/state.json`** maps each service to the `appName` Dokploy generated for it. Those
+  names are random and immutable, and they are what `docker service ls` and the host paths use. Keep the
+  file, or re-derive it with `provision.py --list`.
+- **Backups**: the infra stack's named volumes (`sqlserver-data`, `mongo-data`, `minio-data`,
+  `rabbitmq-data`, `redis-data`, `seq-data`) support Dokploy's scheduled S3 volume backups. Note they
+  are prefixed with the infra service's `appName`, not `mavera_`.
 - **The upgrade worth making**: have `MaveraDSS/ci-template` push a moving tag (e.g. `develop`)
-  alongside its git-SHA tags. Then set `pull_policy: always`, delete the `build:` blocks, add ACR
-  registry credentials, and deploys become a `docker compose pull` — minutes instead of an hour, and
-  no `GH_PAT` in build history.
+  alongside its git-SHA tags. The Applications could then use a Docker-image source instead of building
+  on the VM — minutes instead of an hour, and no build load competing with previews. The cost is that
+  preview deployments would have to be driven by CI through the Dokploy API rather than by Dokploy's own
+  PR webhook, so weigh it against how much previews are being used.

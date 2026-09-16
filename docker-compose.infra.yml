@@ -1,0 +1,304 @@
+# =============================================================================
+# Mavera DSS - shared infrastructure
+# =============================================================================
+# Deployed on Dokploy as a Docker Compose service. The 29 application services
+# are NOT here: each is a separate Dokploy *Application* built from its own
+# repo's dockerfile/Dockerfile, because Application is the only service type
+# Dokploy gives preview deployments to. See README "Topology".
+#
+# Everything here sits on `dokploy-network` so those Applications can reach it.
+# Compose registers each service's own name as a network alias on every network
+# the container joins, so `sqlserver`, `mongo`, `redis`, `minio`,
+# `otel-collector`, `gotenberg` and `seq` resolve from any Application with no
+# change to the $Placeholder values. Only `rabbitmq` needs an alias declared.
+#
+# TWO DOKPLOY SETTINGS ARE LOAD-BEARING:
+#   * Compose Type must be `Docker Compose`, NOT `Stack`. `docker stack deploy`
+#     renames services to `<appName>_sqlserver`, breaking plain-name DNS.
+#   * Isolated Deployments must stay OFF. It moves the stack onto a private
+#     network and off dokploy-network - exactly the connectivity we need.
+#
+# Env-file generation must be enabled in Dokploy or every ${VAR:?} below fails
+# at parse time. See DEPLOY.md "Turn on env-file generation".
+#
+# Locally:  docker network create dokploy-network
+#           docker compose -f docker-compose.infra.yml up -d
+# =============================================================================
+
+services:
+
+  sqlserver:
+    image: ${SQLSERVER_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
+    restart: unless-stopped
+    user: root
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${DB_PASS:?DB_PASS is not set}
+      MSSQL_PID: Developer
+      MSSQL_AGENT_ENABLED: "true"
+      # SQL Server on Linux otherwise grows to ~80% of host RAM, which starves
+      # the 29 service containers on a shared VM. Tune for your instance size.
+      # NOTE: this variable is only honoured during first-run setup (it is
+      # written into mssql.conf then). mssql-init therefore also applies it via
+      # sp_configure, so the cap holds on an already-initialised volume too.
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      # RESTORE runs inside the server process, so the .bak files must be on
+      # the server's own filesystem. mssql-init mounts the same volume at the
+      # same path -- it enumerates the files, the server opens them, and the
+      # paths it puts in the RESTORE statement have to be valid for both.
+      - mssql-backups:/var/opt/mssql/backups:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [dokploy-network]
+
+  # Unpacks Databases.zip into the shared backup volume so `sqlserver` can
+  # RESTORE from it. Committing the zip rather than the three .bak files keeps
+  # the repo under GitHub's 100 MB per-file limit (the two large backups are
+  # ~145 MB each uncompressed) and matches .gitignore, which excludes *.bak.
+  #
+  # Alpine is used for its busybox `unzip`; the SQL Server image has none.
+  # Re-extracts only when the zip changes, so redeploys cost one checksum.
+  mssql-backups-init:
+    image: alpine:3
+    restart: "no"
+    volumes:
+      - ./Databases.zip:/src/Databases.zip:ro
+      - mssql-backups:/backups
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        # Absent (or a directory, which is what Compose creates for a missing
+        # bind-mount source) means "no backups supplied" -- deploy anyway, and
+        # let 00-init-databases.sql report the databases as [MISSING].
+        if [ ! -f /src/Databases.zip ]; then
+          echo "no Databases.zip in the project directory - nothing to extract"
+          exit 0
+        fi
+        stamp=$$(md5sum /src/Databases.zip | cut -d' ' -f1)
+        if [ -f /backups/.stamp ] && [ "$$(cat /backups/.stamp)" = "$$stamp" ]; then
+          echo "backups already extracted ($$stamp)"
+          ls -la /backups/*.bak 2>/dev/null || true
+          exit 0
+        fi
+        echo "extracting Databases.zip ($$stamp)"
+        rm -f /backups/*.bak /backups/.stamp
+        unzip -o -j /src/Databases.zip '*.bak' -d /backups
+        echo "$$stamp" > /backups/.stamp
+        ls -la /backups/*.bak
+    networks: [dokploy-network]
+
+  # Restores the data-bearing databases, then creates the empty catalogs.
+  # NOTE: the catalogs it creates are EMPTY —
+  # see README "SQL schema is not solved by compose".
+  # Reuses the server image: it already ships /opt/mssql-tools18/bin/sqlcmd, so
+  # there is no second image to pull and the client version always matches the
+  # server. (There is no mcr.microsoft.com/mssql-tools18 repository; the only
+  # standalone tools image is mssql-tools:latest, which is sqlcmd 17.)
+  mssql-init:
+    image: ${SQLSERVER_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
+    user: root
+    restart: "no"
+    depends_on:
+      sqlserver: { condition: service_healthy }
+      mssql-backups-init: { condition: service_completed_successfully }
+    environment:
+      DB_PASS: ${DB_PASS:?DB_PASS is not set}
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
+      SQL_RESTORE_ENABLED: ${SQL_RESTORE_ENABLED:-true}
+      # DESTRUCTIVE: true re-restores over the live databases on every deploy.
+      SQL_RESTORE_FORCE: ${SQL_RESTORE_FORCE:-false}
+    volumes:
+      - ./config/mssql-init:/init:ro
+      - ./config/mssql-restore.sh:/mssql-restore.sh:ro
+      # Same path as in `sqlserver`, deliberately: mssql-restore.sh globs this
+      # directory for <db>*.bak and puts the paths it finds straight into the
+      # RESTORE statement the server executes.
+      - mssql-backups:/var/opt/mssql/backups:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        SQLCMD=/opt/mssql-tools18/bin/sqlcmd
+        # Enforce the memory cap regardless of when the volume was initialised.
+        if [ -n "$$MSSQL_MEMORY_LIMIT_MB" ]; then
+          echo "capping max server memory at $$MSSQL_MEMORY_LIMIT_MB MB"
+          $$SQLCMD -C -S sqlserver -U sa -P "$$DB_PASS" -b -Q "
+            EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
+            EXEC sp_configure 'max server memory (MB)', $$MSSQL_MEMORY_LIMIT_MB; RECONFIGURE;"
+        fi
+        # Restore first: 00-init-databases.sql then reports the data-bearing
+        # databases as [present] rather than [MISSING], so one log confirms both.
+        /bin/sh /mssql-restore.sh
+        for f in /init/*.sql; do
+          echo "applying $$f"
+          /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U sa -P "$$DB_PASS" -b -i "$$f"
+        done
+        echo "mssql-init complete"
+    networks: [dokploy-network]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [dokploy-network]
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-mavera}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
+      RABBITMQ_DEFAULT_VHOST: "/"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 40s
+    networks:
+      dokploy-network:
+        aliases:
+          # `rabbitmq` is what Compose would have added implicitly; naming any
+          # alias replaces that, so it has to be spelled out here.
+          - rabbitmq
+          # Hard-coded (not a placeholder) in 24 of the 29 appsettings.json files.
+          - rabbitmq.rabbitmq.svc.cluster.local
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS:?MONGO_ROOT_PASS is not set}
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks: [dokploy-network]
+
+  mongo-init:
+    image: mongo:7
+    restart: "no"
+    depends_on:
+      mongo: { condition: service_healthy }
+    environment:
+      MONGO_APP_USER: ${MONGO_USER:-mavera}
+      MONGO_APP_PASS: ${MONGO_PASS:?MONGO_PASS is not set}
+      MONGO_ROOT_USER: ${MONGO_ROOT_USER:-root}
+      MONGO_ROOT_PASS: ${MONGO_ROOT_PASS:?MONGO_ROOT_PASS is not set}
+    volumes:
+      - ./config/mongo-init.js:/init/mongo-init.js:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mongosh "mongodb://$$MONGO_ROOT_USER:$$MONGO_ROOT_PASS@mongo:27017/admin" \
+          --quiet /init/mongo-init.js || echo "mongo-init: users may already exist, continuing"
+        echo "mongo-init complete"
+    networks: [dokploy-network]
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-mavera}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASS:?MINIO_PASS is not set}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+    networks: [dokploy-network]
+
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio: { condition: service_healthy }
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER:-mavera}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASS:?MINIO_PASS is not set}
+      BUCKET_ASSETS: ${BUCKET_ASSETS:-mavera-assets}
+      BUCKET_DOCUMENTS: ${BUCKET_DOCUMENTS:-mavera-documents}
+    volumes:
+      - ./config/minio-init.sh:/minio-init.sh:ro
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+    networks: [dokploy-network]
+
+  seq:
+    image: datalust/seq:latest
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      # Current Seq images refuse to start on first run without one of these.
+      # A password is used rather than SEQ_FIRSTRUN_NOAUTHENTICATION because Seq
+      # can be given a public Dokploy domain, and that would expose every log.
+      # Ingestion stays anonymous (Seq does not require API keys by default),
+      # so the collector needs no credentials.
+      SEQ_FIRSTRUN_ADMINPASSWORD: ${SEQ_ADMIN_PASS:?SEQ_ADMIN_PASS is not set}
+    volumes:
+      - seq-data:/data
+    networks: [dokploy-network]
+
+  # Terminates the services' OTLP/gRPC stream and forwards to Seq.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./config/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - seq
+    networks: [dokploy-network]
+
+  # PDF engine behind mavera-file-conversion-service ($GotenbergSharpClient_ServiceUrl).
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    command: ["gotenberg", "--api-port=3000"]
+    networks: [dokploy-network]
+
+networks:
+  # Dokploy's Traefik network, also the shared bus between this stack and the
+  # Applications (Swarm services on the same overlay network).
+  # Outside Dokploy: docker network create dokploy-network
+  dokploy-network:
+    external: true
+
+volumes:
+  sqlserver-data:
+  # Extracted .bak files. ~300 MB, kept after restore so a re-restore (or a
+  # rebuilt sqlserver-data volume) does not need the zip unpacked again.
+  # Reclaim with: docker volume rm <project>_mssql-backups
+  mssql-backups:
+  redis-data:
+  rabbitmq-data:
+  mongo-data:
+  minio-data:
+  seq-data:
