@@ -73,6 +73,12 @@ NEWLINE = "\n"
 # /etc/dokploy: that is Dokploy's own data root (host bind mount, 1:1 into the
 # container) and it prunes paths inside it -- removeDirectoryCode rm -rf's
 # /etc/dokploy/applications/<appName> when an app or preview is torn down.
+# Defaults of the matching Dokploy columns (db/schema/application.ts). Only
+# relevant to buildpack builders; we send them because saveBuildType requires
+# the keys.
+HEROKU_VERSION_DEFAULT = "24"
+RAILPACK_VERSION_DEFAULT = "0.15.4"
+
 ENTRYPOINT_SOURCE = REPO_ROOT / "config" / "entrypoint.sh"
 DEFAULT_ENTRYPOINT_HOST_PATH = "/srv/mavera/entrypoint.sh"
 ENTRYPOINT_MOUNT_PATH = "/entrypoint.sh"
@@ -503,11 +509,12 @@ def provision(
             "dockerContextPath": "",
             "dockerBuildStage": "",
             # Required by the endpoint even for buildType=dockerfile, where
-            # they mean nothing. Both are `string | null`; null is what the UI
-            # sends. Omitting them fails with
-            # "expected nonoptional, received undefined".
-            "herokuVersion": None,
-            "railpackVersion": None,
+            # neither is used. Omitting them fails with "expected nonoptional,
+            # received undefined". These are Dokploy's own column defaults --
+            # passed back rather than null so switching an app to a buildpack
+            # builder later still finds sane values.
+            "herokuVersion": HEROKU_VERSION_DEFAULT,
+            "railpackVersion": RAILPACK_VERSION_DEFAULT,
         },
     )
 
@@ -590,6 +597,80 @@ def provision(
     return {"name": name, "role": role, "applicationId": application_id}
 
 
+def verify(
+    client: Dokploy,
+    application_id: str,
+    spec: dict,
+    role: str,
+    entrypoint_mode: str,
+) -> list[str]:
+    """Read the application back and confirm the state actually landed.
+
+    Every call in provision() can return 200 while leaving something unset --
+    and a half-applied Application fails much later, in a confusing way. The
+    canonical example: if saveBuildType does not take, buildType stays at
+    Dokploy's default of "nixpacks", which ignores dockerfile/Dockerfile
+    entirely, auto-detects the language and picks its own SDK version. That
+    surfaces as a build installing the wrong .NET major, nowhere near the cause.
+    """
+    is_preview = role == "preview"
+    try:
+        app = client.get(f"/application.one?applicationId={application_id}")
+    except DokployError as error:
+        return [f"could not read the application back: {error}"]
+    if not isinstance(app, dict) or not app:
+        return ["application.one returned nothing"]
+
+    problems = []
+
+    def expect(field, wanted, why=""):
+        if field not in app:
+            return  # this Dokploy does not report it; nothing to check
+        actual = app.get(field)
+        if actual != wanted:
+            suffix = f" - {why}" if why else ""
+            problems.append(
+                f"{field}: expected {wanted!r}, got {actual!r}{suffix}"
+            )
+
+    expect("buildType", "dockerfile",
+           "nixpacks ignores dockerfile/Dockerfile and picks its own SDK version")
+    expect("dockerfile", spec["dockerfile"])
+    expect("repository", spec["repository"])
+    expect("branch", spec["branch"])
+    expect("sourceType", "github", "previews only run for github sources")
+    expect("isPreviewDeploymentsActive", is_preview)
+
+    command, args = entrypoint_spec(entrypoint_mode)
+    expect("command", command, "without this the image ENTRYPOINT runs and "
+                               "appsettings.json is never rendered")
+    if entrypoint_mode == "inline" and "args" in app:
+        actual = app.get("args") or []
+        if list(actual) != args:
+            problems.append(
+                f"args: expected the entrypoint script ({len(args)} elements), "
+                f"got {len(actual)} element(s)"
+            )
+
+    if "networkSwarm" in app:
+        aliases = []
+        for entry in (app.get("networkSwarm") or []):
+            aliases.extend(entry.get("Aliases") or [])
+        wanted = [] if is_preview else spec["aliases"]
+        if sorted(aliases) != sorted(wanted):
+            problems.append(
+                f"networkSwarm aliases: expected {sorted(wanted)}, "
+                f"got {sorted(aliases)}"
+                + ("" if is_preview else " - service discovery depends on these")
+            )
+
+    env_field = "previewEnv" if is_preview else "env"
+    if env_field in app and not (app.get(env_field) or "").strip():
+        problems.append(f"{env_field} is empty - the app will see no configuration")
+
+    return problems
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", default="build/dokploy/manifest.json")
@@ -649,6 +730,17 @@ def main() -> None:
     parser.add_argument(
         "--preview-wildcard",
         help="e.g. '*.preview.example.com'. Omit to use Dokploy's sslip.io default.",
+    )
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="read the applications back and report anything that does not "
+        "match the manifest, without writing. Needs no --apply.",
+    )
+    parser.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="skip the post-apply read-back check (not recommended)",
     )
     parser.add_argument(
         "--update-only",
@@ -740,6 +832,34 @@ def main() -> None:
         key: os.environ.get(key) for key in ("GATEWAY_HOST", "IDENTITY_HOST")
     }
 
+    if args.verify_only:
+        problem_count = 0
+        for spec in specs:
+            name = f"{spec['name']}-pr" if args.role == "preview" else spec["name"]
+            app = existing.get(name)
+            print(f"\n{name}")
+            if not app:
+                print("    MISSING - not provisioned in this environment")
+                problem_count += 1
+                continue
+            problems = verify(
+                client, app["applicationId"], spec, args.role, args.entrypoint_mode
+            )
+            if problems:
+                problem_count += len(problems)
+                for p in problems:
+                    print(f"    PROBLEM  {p}")
+            else:
+                print(f"    ok  appName={app.get('appName')}")
+        print()
+        if problem_count:
+            sys.exit(
+                f"{problem_count} problem(s) found. Re-run without --verify-only "
+                "and with --apply to fix them."
+            )
+        print("all verified")
+        return
+
     results = []
     for spec in specs:
         env_block = (env_dir / spec["envFile"]).read_text(encoding="utf-8").strip()
@@ -777,6 +897,30 @@ def main() -> None:
             encoding="utf-8", newline="\n",
         )
         print(f"\n{len(results)} application(s) written. appNames recorded in {state_path}")
+
+        if args.no_verify:
+            print("read-back verification skipped (--no-verify).")
+        else:
+            print("\nverifying what actually landed:")
+            problem_count = 0
+            for spec, result in zip(specs, results):
+                problems = verify(
+                    client, result["applicationId"], spec, args.role,
+                    args.entrypoint_mode,
+                )
+                if problems:
+                    problem_count += len(problems)
+                    print(f"  {result['name']}")
+                    for p in problems:
+                        print(f"    PROBLEM  {p}")
+            if problem_count:
+                sys.exit(
+                    f"\n{problem_count} problem(s): the API accepted the calls but "
+                    "the state is not what the manifest says. Do NOT deploy yet - "
+                    "fix these first, then re-run."
+                )
+            print(f"  all {len(results)} verified")
+
         print("Nothing has been deployed yet - deploy from the Dokploy UI.")
     else:
         print(f"\n{len(results)} application(s) would be written.")

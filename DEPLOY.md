@@ -698,6 +698,36 @@ python scripts/dokploy/provision.py --only mavera-audit --update-only --apply
 half-provisioned service appears there, the re-run will update it. `--update-only` makes that
 guarantee explicit: it refuses to create anything, and fails instead.
 
+**A half-applied Application is worse than a failed one**, because the API can accept every call and
+still leave something unset. The one that bites hardest: `buildType` defaults to **`nixpacks`**, and
+Nixpacks ignores `dockerfile/Dockerfile` completely — it auto-detects the language and chooses its own
+SDK version. So an Application whose `saveBuildType` never landed builds *successfully* against the
+wrong .NET major, and the only symptom is a confusing runtime failure much later.
+
+Every `--apply` therefore reads each Application back and checks it against the manifest — build type,
+Dockerfile path, repo, branch, source type, entrypoint command and args, network aliases, and a
+non-empty environment. It refuses to report success if anything is off:
+
+```
+verifying what actually landed:
+  mavera-audit
+    PROBLEM  buildType: expected 'dockerfile', got 'nixpacks' - nixpacks ignores
+             dockerfile/Dockerfile and picks its own SDK version
+
+1 problem(s): the API accepted the calls but the state is not what the manifest
+says. Do NOT deploy yet - fix these first, then re-run.
+```
+
+Check already-provisioned Applications the same way without writing anything:
+
+```bash
+python scripts/dokploy/provision.py --verify-only
+python scripts/dokploy/provision.py --verify-only --role preview --only mavera-audit
+```
+
+The preview-role check is worth running on its own: it is what catches a preview host that has
+inherited production network aliases, without needing a live preview to observe the DNS collision.
+
 Then deploy from the UI in this order, so each group comes up against something that already answers:
 
 | Step | Services |
@@ -887,6 +917,7 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | `No such image: alpine:3` (or any other image) right after a failed pull | Collateral: one failed pull aborts the whole `up`, and Compose then cannot create the remaining containers. Fix the *first* pull error in the log and re-deploy; the rest usually clear on their own. |
 | `pull access denied` / `toomanyrequests` on several Docker Hub images | Anonymous Docker Hub pulls are capped at 10/hour per IP since April 2025, and the infra stack pulls 7 Hub images. Authenticate on the host: `sudo docker login`. See *Authenticate to Docker Hub* in Phase 6. |
 | `Input validation failed` / `expected nonoptional, received undefined` from an `application.*` call | Dokploy added a required field to that endpoint's input schema. `provision.py` fills required fields from your instance's own OpenAPI document and prints each one it auto-filled, so a re-run normally clears it. If it does not, the failing field name is in the `zodError` and needs adding to the payload in `provision.py`. |
+| Build installs the wrong .NET major (e.g. 6.0 for a net8.0 project), or ignores `dockerfile/Dockerfile` | The Application is still on Dokploy's default `buildType` of `nixpacks`, which auto-detects the language and picks its own SDK. Almost always means `saveBuildType` failed earlier in the run. Check with `provision.py --list` (it prints `buildType=`) or `--verify-only`, then re-run with `--apply`. |
 | A run failed part-way through one service | Re-run it. `provision.py` matches existing applications by name and updates in place. Confirm first with `--list` that the half-made application is listed; then re-run, optionally with `--update-only` so it can only update, never create. |
 | App starts but reads literal `$Placeholder` values | The Run Command did not take effect, so `envsubst` never ran. Check Advanced → Run Command: it should be `/bin/sh` with the script as the first argument (inline mode), or `/bin/sh /entrypoint.sh` (bind mode). |
 | `/entrypoint.sh: not found`, or it is a directory | `--entrypoint-mode bind` only: the bind-mount source is missing on the node the task landed on, so Docker created it as a directory. See Phase 8a. The default inline mode cannot hit this. |

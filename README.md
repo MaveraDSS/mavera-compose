@@ -176,6 +176,13 @@ each one. Dokploy's tRPC input schemas gain required fields between releases (`s
 `herokuVersion` and `railpackVersion`), and discovering those one HTTP 400 at a time — part-way through
 a 29-service run — is worse than reading the schema up front.
 
+And because the API can accept every call while still leaving state unset, `--apply` reads each
+Application back and checks it against the manifest, refusing to report success if anything is off.
+`--verify-only` runs the same check without writing. This exists because of a specific failure:
+`buildType` defaults to **`nixpacks`**, which ignores `dockerfile/Dockerfile` entirely and picks its own
+SDK version, so an Application whose `saveBuildType` never landed builds happily against the wrong .NET
+major and only fails later, far from the cause.
+
 `generate-manifest.py` runs `docker compose --profile all config`, which does the `${VAR}` interpolation
 and the `x-placeholders` anchor merge, then writes `build/dokploy/manifest.json` and one fully-resolved
 `build/dokploy/env/<service>.env` per app. **Those env files contain real secrets and are gitignored** —
@@ -899,6 +906,7 @@ COMPOSE_PROFILES=platform docker compose up -d && docker compose ps
 | `scripts/dokploy/provision.py` | Creates/updates the Dokploy Applications over the API. Dry run by default |
 | `scripts/dokploy/test_provision.py` | Offline checks for project/environment resolution and the existing-application lookup |
 | `scripts/dokploy/test_schema.py` | Offline checks for the OpenAPI-driven required-field handling. `--spec <file>` checks against a spec dumped from your own instance |
+| `scripts/dokploy/test_verify.py` | Offline checks for the read-back verifier, including the nixpacks and preview-alias-hijack regressions |
 | `build/dokploy/` | Generated, gitignored. The env blocks hold real secrets |
 
 ### Local
