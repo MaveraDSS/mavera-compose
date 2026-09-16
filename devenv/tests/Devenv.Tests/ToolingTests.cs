@@ -67,8 +67,9 @@ public class ToolingTests : IDisposable
     {
         var env = Fixture.Dev02();
         Assert.Equal("ropc_client", env.Frontend[Auth.RopcClientKey]);
-        Assert.NotNull(env.Testing);
-        Assert.False(env.Testing.Configured); // blank until the team names the test organisation
+        Assert.True(env.Testing.Configured);
+        Assert.Equal("E2E Tests Organisation", env.Testing.OrganizationName);
+        Assert.True(Guid.TryParse(env.Testing.OrganizationId, out _));
     }
 
     [Fact]

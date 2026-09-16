@@ -42,9 +42,9 @@
   },
   "connectivityCheckUrl": "https://dev02.test.mavera.claims.verisk.com/.well-known/openid-configuration",
   "testing": {
-    "_comment": "The dedicated test organisation on dev02: automated checks (/dss:verify, /dss:ticket) create cases and documents only here. Blank until the team names it (DSS-5647).",
-    "organizationId": "",
-    "organizationName": ""
+    "_comment": "The dedicated test organisation on dev02: automated checks (/dss:verify, /dss:ticket) create cases and documents only here. The E2E test users (password login, no Okta code) belong to it.",
+    "organizationId": "dcdf5780-25a5-46bc-bed6-afa900a66029",
+    "organizationName": "E2E Tests Organisation"
   },
   "notes": "Reachable only with Zscaler connected. Each environment has its own Okta authorization server (vnordics-<env>-dss) and its own internal-services client; the legacy server aus2oxv9rn64WrLLi0h8 is rejected here."
 }
