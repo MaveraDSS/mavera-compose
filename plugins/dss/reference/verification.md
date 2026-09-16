@@ -16,6 +16,10 @@ Token:
 T=$(dotnet run --project <DEVENV>/src/Devenv -- token --root <DEVENV>)
 ```
 
+`TEST_USER` is a claims handler of the test organisation. For medical-advisor flows the developer can put the
+MA user's credentials into `TEST_USER`/`TEST_PASSWORD` temporarily, or you ask them to; `secrets.json` also carries
+`TEST_MA_USER`/`TEST_MA_PASSWORD` for that purpose. Never print either.
+
 If that fails with a missing `TEST_USER`, ask the developer for a token instead: in the logged-in frontend, open
 `http://localhost:3002/api/auth/session` and copy `accessToken`; they paste it into a shell variable themselves.
 Never ask them to paste it into the chat.
