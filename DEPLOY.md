@@ -492,27 +492,85 @@ nothing is written to that instance.
 Infrastructure is up and the SQL restore is verified before this starts. Applications have no
 `depends_on`, so anything deployed before infrastructure answers will crash-loop until it does.
 
-### 8a. Put the entrypoint script on the host
+### 8a. The entrypoint script — nothing to do
 
-Every app image's ENTRYPOINT is replaced with `envsubst`-then-`dotnet` (README *How configuration
-works*). Compose bind-mounted `config/entrypoint.sh` for that; Applications need it on the host:
+Every app image's ENTRYPOINT is `dotnet Foo.dll`, and it has to be replaced with "render the
+appsettings template with `envsubst`, then exec dotnet" (README *How configuration works*). Compose did
+that by bind-mounting `config/entrypoint.sh`; an Application has no compose file to mount from.
 
-```bash
-sudo install -d -m 755 /etc/dokploy/mavera
-# Phase 4 already cloned this repo onto the host, so copy it from there.
-# (mavera-compose is private, so curl from raw.githubusercontent.com will not work.)
-sudo cp /etc/dokploy/compose/<infra-app-name>/code/config/entrypoint.sh \
-        /etc/dokploy/mavera/entrypoint.sh
-sudo chmod 644 /etc/dokploy/mavera/entrypoint.sh
-head -1 /etc/dokploy/mavera/entrypoint.sh      # expect: #!/bin/sh
+`provision.py` handles it **inline** by default: it reads `config/entrypoint.sh` out of your checkout
+and sends it as the container's arguments.
+
+```
+Command: ["/bin/sh"]        Args: ["-c", "<the whole script>"]
 ```
 
-It stays 644 on purpose — the provisioner sets the Run Command to `/bin/sh /entrypoint.sh` rather than
-executing it, because Dokploy never marks mounted files executable.
+Dokploy's `command` field is split on spaces with no quote handling, which is why the command is the
+bare `/bin/sh` — but `args` is a real string array, so the script survives verbatim, newlines and all.
+Both fields are inherited by preview deployments.
 
-If the Docker host is a Swarm with more than one node, put the file on every node, or add a placement
-constraint pinning the Applications to the node that has it. A bind-mount source that does not exist is
-silently created by Docker **as a directory**.
+**So there is nothing to place on the host, and no path to get right.** Skip to 8b.
+
+#### Fallback: bind-mount it from the host instead
+
+Use this if you would rather keep the script out of Dokploy's database, or if inline args ever
+misbehave:
+
+```bash
+# on the Docker host, over SSH
+sudo install -d -m 755 /srv/mavera
+sudo tee /srv/mavera/entrypoint.sh < config/entrypoint.sh   # or scp it across
+sudo chmod 644 /srv/mavera/entrypoint.sh
+head -1 /srv/mavera/entrypoint.sh      # expect: #!/bin/sh
+```
+
+```bash
+python scripts/dokploy/provision.py --entrypoint-mode bind --apply
+# non-default location:
+python scripts/dokploy/provision.py --entrypoint-mode bind \
+  --entrypoint-host-path /opt/mavera/entrypoint.sh --apply
+```
+
+Any absolute path on the Docker host works — `hostPath` is passed to Docker verbatim. **Do not put it
+under `/etc/dokploy`**: that is Dokploy's own directory, its layout is an implementation detail, and
+Dokploy prunes paths inside it.
+
+Three things that bite in this mode, and are the reason it is not the default:
+
+- **If the source file does not exist when the container starts, Docker silently creates it as a
+  directory**, and the app dies with `/entrypoint.sh: not found`. Check `file /srv/mavera/entrypoint.sh`
+  says `POSIX shell script`, not `directory`.
+- **On a multi-node Swarm the file must exist on every node** that could schedule these tasks, or you
+  need a placement constraint pinning them to the one that has it.
+- `644` is deliberate. Dokploy never marks mounted files executable, so the Run Command runs the script
+  *through* `/bin/sh` rather than executing it.
+
+> **Running from Git Bash on Windows?** MSYS rewrites `/opt/...`-style arguments into Windows paths
+> (`C:/Program Files/Git/opt/...`). Use PowerShell. `provision.py` rejects the mangled value rather than
+> writing a broken mount.
+
+#### Where is `/etc/dokploy`, anyway?
+
+You do not need it for the above, but if you are looking for Dokploy's own files — the clone of this
+repo, the generated `.env` — note that the base path is Dokploy's business and has differed between
+installs. Two things that catch people out: the Dokploy **web terminal and `docker exec` put you inside
+a container**, not on the host, and the directory may be root-owned (which gives *permission denied*,
+not *no such file*). Ask Docker instead of guessing:
+
+```bash
+docker inspect dokploy \
+  --format '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+docker service inspect dokploy \
+  --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}' 2>/dev/null
+```
+
+Or find it from the clone Dokploy already made when you deployed the infra stack in Phase 6:
+
+```bash
+sudo find / -name docker-compose.infra.yml -not -path '/proc/*' 2>/dev/null
+```
+
+The Dokploy UI also shows the exact path on the Compose service's page.
 
 ### 8b. Connect the GitHub App to the org
 
@@ -556,7 +614,8 @@ Deploy it from the UI and read the logs. The line that matters:
 
 A `[entrypoint] WARNING: unrendered placeholders remain` block names exactly which variables are
 missing from the Dokploy environment — it doubles as the completeness check. If instead you see the app
-start without that line at all, the Run Command did not take effect and nothing has been rendered.
+start with no `[entrypoint]` line at all, the Run Command did not take effect and nothing has been
+rendered — check Advanced → Run Command on the Application.
 
 Then confirm the two things the whole topology rests on, from inside the container (Dokploy's terminal):
 
@@ -761,8 +820,8 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | `pull access denied for minio/mc` / `for minio/minio` | MinIO deleted its Docker Hub repositories. Both images now come from `quay.io` and are pinned in the compose files — make sure you are deploying a revision that has that change. |
 | `No such image: alpine:3` (or any other image) right after a failed pull | Collateral: one failed pull aborts the whole `up`, and Compose then cannot create the remaining containers. Fix the *first* pull error in the log and re-deploy; the rest usually clear on their own. |
 | `pull access denied` / `toomanyrequests` on several Docker Hub images | Anonymous Docker Hub pulls are capped at 10/hour per IP since April 2025, and the infra stack pulls 7 Hub images. Authenticate on the host: `sudo docker login`. See *Authenticate to Docker Hub* in Phase 6. |
-| App starts but reads literal `$Placeholder` values | The Run Command did not take effect, so `envsubst` never ran. Check Advanced → Run Command is `/bin/sh /entrypoint.sh`. |
-| `/entrypoint.sh: not found`, or it is a directory | The bind-mount source is missing on the node the task landed on. See Phase 8a. |
+| App starts but reads literal `$Placeholder` values | The Run Command did not take effect, so `envsubst` never ran. Check Advanced → Run Command: it should be `/bin/sh` with the script as the first argument (inline mode), or `/bin/sh /entrypoint.sh` (bind mode). |
+| `/entrypoint.sh: not found`, or it is a directory | `--entrypoint-mode bind` only: the bind-mount source is missing on the node the task landed on, so Docker created it as a directory. See Phase 8a. The default inline mode cannot hit this. |
 | A service resolves to two addresses | A preview is claiming a production alias. The preview-host Application must have **no** `Aliases` in its Swarm network setting. See README *Why two Applications per repo*. |
 | 502/503 from the gateway for one service | That Application lost its alias, or was provisioned without one. Re-run `provision.py --only <svc> --apply`. |
 | A PR opens but no preview appears | The PR's **base** branch must equal the preview-host Application's configured branch, previews must be active on it, and the author needs write access to the repo. |

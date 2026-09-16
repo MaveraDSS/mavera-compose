@@ -12,6 +12,10 @@ Run generate-manifest.py first. Then:
     python scripts/dokploy/provision.py --only mavera-audit --apply
     python scripts/dokploy/provision.py --only mavera-audit --role preview --apply
 
+By default config/entrypoint.sh is sent inline as the container's args, so
+nothing has to be placed on the Docker host. Pass --entrypoint-mode bind to
+bind-mount it from --entrypoint-host-path instead. See DEPLOY.md Phase 8a.
+
 Two roles, because Dokploy previews inherit the parent Application's network
 aliases and would otherwise answer to the production DNS name and steal live
 east-west traffic (see README "Why two Applications per repo"):
@@ -43,11 +47,41 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 NEWLINE = "\n"
 
-ENTRYPOINT_HOST_PATH = "/etc/dokploy/mavera/entrypoint.sh"
+# --- how config/entrypoint.sh reaches the container ---------------------------
+#
+# Every app image's ENTRYPOINT (`dotnet Foo.dll`) has to be replaced with
+# "envsubst the appsettings template, then exec dotnet". Dokploy's `command` maps
+# to ContainerSpec.Command (a real ENTRYPOINT override) and `args` to
+# ContainerSpec.Args, and both are inherited by preview deployments.
+#
+# "inline" (default) passes the whole script as a single Args element:
+#     Command: ["/bin/sh"]   Args: ["-c", "<contents of config/entrypoint.sh>"]
+# Dokploy splits `command` on spaces with no quote handling, which is why the
+# command itself is the bare "/bin/sh" -- but `args` is a genuine string array,
+# so the script survives verbatim, newlines and all. Nothing has to exist on the
+# host, which also means nothing to get wrong on a multi-node Swarm.
+#
+# "bind" is the fallback: the script is placed on the Docker host and
+# bind-mounted in. Use it if you would rather keep the script out of the Dokploy
+# database, or if inline args ever misbehave. Deliberately NOT under
+# /etc/dokploy -- that is Dokploy's own directory, its location has moved
+# between versions, and Dokploy prunes paths inside it.
+ENTRYPOINT_SOURCE = REPO_ROOT / "config" / "entrypoint.sh"
+DEFAULT_ENTRYPOINT_HOST_PATH = "/srv/mavera/entrypoint.sh"
 ENTRYPOINT_MOUNT_PATH = "/entrypoint.sh"
-# Invoked *through* /bin/sh deliberately: Dokploy writes mounted files 0644 and
-# never chmod +x, so exec'ing the script directly would be permission denied.
-RUN_COMMAND = f"/bin/sh {ENTRYPOINT_MOUNT_PATH}"
+# Invoked *through* /bin/sh in bind mode too: Dokploy writes mounted files 0644
+# and never chmod +x, so exec'ing the script directly would be permission denied.
+BIND_RUN_COMMAND = f"/bin/sh {ENTRYPOINT_MOUNT_PATH}"
+
+
+def entrypoint_spec(mode: str) -> tuple[str, list[str]]:
+    """(command, args) for the chosen mode."""
+    if mode == "bind":
+        return BIND_RUN_COMMAND, []
+    script = ENTRYPOINT_SOURCE.read_text(encoding="utf-8")
+    if "APP_DLL" not in script:
+        sys.exit(f"{ENTRYPOINT_SOURCE} does not look like the entrypoint script")
+    return "/bin/sh", ["-c", script]
 
 # Endpoints this script relies on, checked against the instance's own OpenAPI
 # document before anything is written.
@@ -113,6 +147,16 @@ def redact(payload: dict) -> dict:
     for key, value in payload.items():
         if key in ("env", "previewEnv") and isinstance(value, str):
             out[key] = f"<{len(value.splitlines())} lines, secrets masked>"
+        elif key == "args" and value:
+            # The inline entrypoint script is one multi-line element; summarise
+            # it rather than dumping 44 lines per service.
+            shown = [
+                f"<{len(v.splitlines())}-line script>"
+                if isinstance(v, str) and len(v.splitlines()) > 1
+                else v
+                for v in value
+            ]
+            out[key] = json.dumps(shown)
         elif isinstance(value, str) and any(h in key.lower() for h in SECRET_HINTS):
             out[key] = "***"
         elif isinstance(value, (dict, list)):
@@ -237,6 +281,8 @@ def provision(
     preview_limit: int,
     preview_wildcard: str | None,
     domains: dict,
+    entrypoint_mode: str,
+    entrypoint_host_path: str,
 ) -> dict:
     is_preview = role == "preview"
     name = f"{spec['name']}-pr" if is_preview else spec["name"]
@@ -305,11 +351,13 @@ def provision(
         },
     )
 
+    command, args = entrypoint_spec(entrypoint_mode)
     update: dict[str, Any] = {
         "applicationId": application_id,
         # ContainerSpec.Command, i.e. the ENTRYPOINT override: envsubst renders
         # appsettings.json, then exec dotnet $APP_DLL. Inherited by previews.
-        "command": RUN_COMMAND,
+        "command": command,
+        "args": args,
         "networkSwarm": network_swarm(None if is_preview else spec["aliases"]),
         "autoDeploy": not is_preview,
         "isPreviewDeploymentsActive": is_preview,
@@ -327,20 +375,22 @@ def provision(
             update["previewWildcard"] = preview_wildcard
     client.post("/application.update", update)
 
-    # Bind mount, not file mount: Dokploy builds a file mount's source path from
-    # the *preview's* appName while writing the content under the parent's, so a
-    # preview would get an empty directory at /entrypoint.sh. Bind mounts take
-    # an explicit hostPath and resolve identically for both.
-    client.post(
-        "/mounts.create",
-        {
-            "type": "bind",
-            "hostPath": ENTRYPOINT_HOST_PATH,
-            "mountPath": ENTRYPOINT_MOUNT_PATH,
-            "serviceType": "application",
-            "serviceId": application_id,
-        },
-    )
+    if entrypoint_mode == "bind":
+        # Bind mount, not file mount: Dokploy builds a file mount's source path
+        # from the *preview's* appName while writing the content under the
+        # parent's, so a preview would get an empty directory at
+        # /entrypoint.sh. Bind mounts take an explicit hostPath and resolve
+        # identically for both.
+        client.post(
+            "/mounts.create",
+            {
+                "type": "bind",
+                "hostPath": entrypoint_host_path,
+                "mountPath": ENTRYPOINT_MOUNT_PATH,
+                "serviceType": "application",
+                "serviceId": application_id,
+            },
+        )
 
     if not is_preview and spec["domainEnv"]:
         host = domains.get(spec["domainEnv"])
@@ -386,6 +436,22 @@ def main() -> None:
         "rather than created for all 29 repos at once.",
     )
     parser.add_argument("--preview-limit", type=int, default=2)
+    parser.add_argument(
+        "--entrypoint-mode",
+        choices=["inline", "bind"],
+        default=os.environ.get("MAVERA_ENTRYPOINT_MODE", "inline"),
+        help="inline (default) passes config/entrypoint.sh as container args, so "
+        "nothing needs to exist on the host. bind expects it at "
+        "--entrypoint-host-path on the Docker host.",
+    )
+    parser.add_argument(
+        "--entrypoint-host-path",
+        default=os.environ.get(
+            "MAVERA_ENTRYPOINT_HOST_PATH", DEFAULT_ENTRYPOINT_HOST_PATH
+        ),
+        help="absolute path to config/entrypoint.sh ON THE DOCKER HOST "
+        f"(default: {DEFAULT_ENTRYPOINT_HOST_PATH})",
+    )
     parser.add_argument(
         "--preview-wildcard",
         help="e.g. '*.preview.example.com'. Omit to use Dokploy's sslip.io default.",
@@ -438,6 +504,19 @@ def main() -> None:
     elif not args.selftest:
         print("\nDRY RUN - no writes. Re-run with --apply once the calls look right.\n")
 
+    if args.entrypoint_mode == "bind":
+        if not args.entrypoint_host_path.startswith("/"):
+            sys.exit(
+                "--entrypoint-host-path must be absolute: it is a Docker "
+                f"bind-mount source on the host, got {args.entrypoint_host_path!r}"
+            )
+        print(f"entrypoint: bind mount {args.entrypoint_host_path} -> "
+              f"{ENTRYPOINT_MOUNT_PATH} (must exist on the Docker host)")
+    else:
+        lines = len(ENTRYPOINT_SOURCE.read_text(encoding="utf-8").splitlines())
+        print(f"entrypoint: inline, {ENTRYPOINT_SOURCE.name} ({lines} lines) "
+              "passed as container args - nothing needed on the host")
+
     specs = manifest["applications"]
     if args.only:
         wanted = set(args.only)
@@ -464,6 +543,7 @@ def main() -> None:
             provision(
                 client, spec, args.role, environment_id, existing, gh_id,
                 env_block, args.preview_limit, args.preview_wildcard, domains,
+                args.entrypoint_mode, args.entrypoint_host_path,
             )
         )
 

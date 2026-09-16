@@ -110,19 +110,34 @@ itself only on its own generated URL, and can never answer to a production name.
 Preview hosts are opt-in per repo, because each one costs up to `previewLimit` containers plus a .NET
 SDK build on the shared VM.
 
-### Why `entrypoint.sh` lives on the host
+### How `entrypoint.sh` reaches the container
 
 Applications have no Compose file to bind-mount from, so the `envsubst` step (see *How configuration
-works*) is wired up with two Dokploy features:
+works*) is carried by Dokploy's Run Command, which despite the docs describing it as a debugging `exec`
+maps to `ContainerSpec.Command` — a real ENTRYPOINT override. `command` and `args` are both inherited
+by previews, and there is no `previewCommand`, so one setting covers both.
 
-- **Run Command** `/bin/sh /entrypoint.sh`. Despite the docs describing it as a debugging `exec`, it
-  maps to `ContainerSpec.Command`, i.e. a real ENTRYPOINT override. It is inherited by previews.
-- **A bind mount** of `/etc/dokploy/mavera/entrypoint.sh` → `/entrypoint.sh`. Deliberately *not* a
-  Dokploy *file* mount: Dokploy builds a file mount's source path from the **preview's** appName while
-  writing the content under the **parent's**, so a preview would find an empty directory where the
-  script should be. Bind mounts take an explicit host path and resolve identically for both.
+**Default (`--entrypoint-mode inline`): the script is sent as the container's arguments.**
 
-The mounted file is never `chmod +x`, which is why it is run *through* `/bin/sh` rather than executed.
+```
+Command: ["/bin/sh"]     Args: ["-c", "<the whole of config/entrypoint.sh>"]
+```
+
+Dokploy splits `command` on spaces with no quote handling — hence the bare `/bin/sh` — but `args` is a
+genuine string array, so the script survives verbatim, newlines and all. Nothing has to exist on the
+Docker host, which also means nothing to get wrong on a multi-node Swarm. `config/entrypoint.sh` stays
+the single source of truth; `provision.py` reads it at provisioning time.
+
+**Fallback (`--entrypoint-mode bind`): bind-mount it from the host**, default
+`/srv/mavera/entrypoint.sh`, overridable with `--entrypoint-host-path`. Deliberately *not* under
+`/etc/dokploy` — that is Dokploy's own directory, its layout is an implementation detail, and Dokploy
+prunes paths inside it. Deliberately a *bind* mount and not a Dokploy **file** mount: Dokploy builds a
+file mount's source path from the **preview's** appName while writing the content under the
+**parent's**, so a preview would find an empty directory where the script should be. Bind mounts take
+an explicit host path and resolve identically for both.
+
+In bind mode the file stays `644` — Dokploy never marks mounted files executable, which is why it is
+run *through* `/bin/sh` rather than executed.
 
 ### Provisioning
 
@@ -257,12 +272,11 @@ ssh -L 15672:localhost:15672 ec2-user@<vm>   # then docker compose port, or add 
    env-file generation**. Only the ~15 infrastructure knobs are actually read from it; the rest are
    there so the same file still drives `generate-manifest.py`.
 3. Deploy it, and confirm the SQL restore in the `mssql-init` logs before going further.
-4. Put `config/entrypoint.sh` on the host at `/etc/dokploy/mavera/entrypoint.sh`.
-5. Connect the Dokploy **GitHub App** to the `MaveraDSS` org. Preview deployments only work for
+4. Connect the Dokploy **GitHub App** to the `MaveraDSS` org. Preview deployments only work for
    `sourceType: github`, so this is not optional.
-6. Run `scripts/dokploy/generate-manifest.py`, then `provision.py` — dry run first, one service
+5. Run `scripts/dokploy/generate-manifest.py`, then `provision.py` — dry run first, one service
    (`mavera-audit` is the right pilot) before all 29.
-7. Deploy the Applications from the UI, gateway and identity server last so their domains come up
+6. Deploy the Applications from the UI, gateway and identity server last so their domains come up
    against a fleet that is already answering.
 
 `COMPOSE_PROFILES` and `COMPOSE_PARALLEL_LIMIT` no longer apply to the deployed environment — profiles
@@ -774,13 +788,16 @@ Everything under *Topology on Dokploy* is a design, not a report. What has been 
 | `rabbitmq` keeps both aliases on `dokploy-network` | ✅ renders as `[rabbitmq, rabbitmq.rabbitmq.svc.cluster.local]` |
 | `generate-manifest.py` output | ✅ 29 applications, 170 env keys each, 26 on `release/v.be-2026-04-01` and 3 on `develop`, ports all 80 |
 | `provision.py` payloads for all 29, both roles | ✅ `--selftest`, no network calls |
+| Inline entrypoint args carry the script verbatim | ✅ `Command: ["/bin/sh"]`, `Args: ["-c", <44-line script ending in `exec dotnet "${APP_DLL}"`>]` |
 | Dokploy behaviour the design depends on | read out of the Dokploy source (`resolveServiceNetworks`, `mechanizeDockerContainer`, `deployPreviewApplication`, `generateFileMounts`, the GitHub webhook handler), **not** observed on a running instance |
 
 Nothing has been deployed. In particular these three are unproven against a real Dokploy and should be
 the first things checked, in this order:
 
-1. **Run Command really overrides the image ENTRYPOINT.** The log line
-   `[entrypoint] appsettings.json rendered; starting <APP_DLL>` is the proof.
+1. **Run Command really overrides the image ENTRYPOINT, and a multi-line `args` element survives
+   the round trip through Dokploy.** The log line
+   `[entrypoint] appsettings.json rendered; starting <APP_DLL>` is the proof. If it does not,
+   `--entrypoint-mode bind` is the fallback and exercises a much more conventional code path.
 2. **Both alias forms resolve** from one Application to another — `<svc>` *and*
    `<svc>.svc.cluster.local`. If they do not, service discovery is broken fleet-wide.
 3. **A running preview does not claim a production alias.** `getent hosts <svc>.svc.cluster.local`
@@ -870,7 +887,7 @@ COMPOSE_PROFILES=platform docker compose up -d && docker compose ps
 |---|---|
 | `.env.example` | Every knob, documented |
 | `Databases.zip` | Backups of the three data-bearing SQL databases, restored on first deploy |
-| `config/entrypoint.sh` | envsubst wrapper. Bind-mounted by Compose locally; copied to `/etc/dokploy/mavera/entrypoint.sh` on the Dokploy host |
+| `config/entrypoint.sh` | envsubst wrapper. Bind-mounted by Compose locally; sent inline as container args by `provision.py` on Dokploy |
 | `config/otel-collector.yaml` | OTLP gRPC → Seq |
 | `config/mssql-restore.sh` | Restores the three data-bearing databases; leaves a populated one alone |
 | `config/mssql-init/00-init-databases.sql` | The 4 empty SQL catalogs, and a report on all 7 |
