@@ -99,8 +99,9 @@ Open http://localhost:3002 and log in with a dev02 user (Okta email code).
    that is documentation only, devenv never runs the 1Password CLI. Optional values stay as such references
    until someone fills them, and devenv treats a reference as blank.
 
-`dotnet run --project src/Devenv --` is the long form while the tool is not yet published; it compiles on
-first use and takes about a second afterwards. `devenv` below stands for that prefix.
+`dotnet run --project src/Devenv --` is how devenv is run: straight from the checkout, compiled on first use,
+about a second afterwards, and a `git pull` is the whole update. `devenv` below stands for that prefix; the
+Claude Code skills type the long form for you.
 
 If your repos are not next to mavera-compose, or you are not on dev02, copy `devenv.local.example.json` to
 `devenv.local.json` and set `reposRoot` / `environment` there before `setup`.
