@@ -220,7 +220,16 @@ services:
     networks: [dokploy-network]
 
   minio:
-    image: minio/minio:latest
+    # MinIO deleted its Docker Hub repositories: `minio/minio` and `minio/mc`
+    # now 404, which is why a deploy fails with "pull access denied ...
+    # repository does not exist". The images live on quay.io.
+    #
+    # Pinned, not `:latest`, for two reasons: `latest` is exactly what vanished,
+    # and RELEASE.2025-05-24T17-08-30Z onwards strips the management UI out of
+    # the console, leaving an object browser. This is the last release with the
+    # full console that README documents on port 9001. Read the release notes
+    # before bumping it.
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -237,7 +246,7 @@ services:
     networks: [dokploy-network]
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     restart: "no"
     depends_on:
       minio: { condition: service_healthy }

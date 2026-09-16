@@ -365,6 +365,23 @@ on them will not work; OCR and PDF generation in particular need a valid Apryse 
 
 ## Phase 6 — First deploy: infrastructure only
 
+### Authenticate to Docker Hub first
+
+Anonymous Docker Hub pulls have been capped at **10 per hour per IP** since April 2025, and this stack
+pulls 7 Hub images in one go (`redis`, `rabbitmq`, `mongo`, `alpine`, `datalust/seq`,
+`otel/opentelemetry-collector-contrib`, `gotenberg/gotenberg`). A free account raises that to 100/hour:
+
+```bash
+sudo docker login          # any free Docker Hub account
+```
+
+Skip it and the deploy may fail part-way through with `pull access denied` or `toomanyrequests` on
+whichever images happen to come last — and then with `No such image: …` on the rest, because one failed
+pull aborts the whole `up`. The SQL Server image (`mcr.microsoft.com`) and MinIO (`quay.io`) are not
+affected; neither registry rate-limits anonymous pulls this way.
+
+### Deploy
+
 Press **Deploy**. `docker-compose.infra.yml` has no profiles: this starts 8 long-running containers
 plus 4 init jobs, and builds nothing. Budget **5–10 minutes** on the first deploy: `mssql-backups-init` unpacks ~300 MB of backups
 and `mssql-init` restores all three databases before it exits. Later deploys skip both and take a
@@ -741,6 +758,9 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | `mssql-init` exits non-zero on a restore | Deliberate: nothing starts on half-restored data. See Phase 7, *If a restore fails*. |
 | Deploy stalls on `Pulling … unauthorized` | Local only: `pull_policy: build` was removed from `x-service-base`, so Compose is trying ACR instead of building. |
 | SQL Server eating all RAM | `MSSQL_MEMORY_LIMIT_MB` only applies at first-run setup; `mssql-init` re-applies it via `sp_configure` on every run — re-run it. |
+| `pull access denied for minio/mc` / `for minio/minio` | MinIO deleted its Docker Hub repositories. Both images now come from `quay.io` and are pinned in the compose files — make sure you are deploying a revision that has that change. |
+| `No such image: alpine:3` (or any other image) right after a failed pull | Collateral: one failed pull aborts the whole `up`, and Compose then cannot create the remaining containers. Fix the *first* pull error in the log and re-deploy; the rest usually clear on their own. |
+| `pull access denied` / `toomanyrequests` on several Docker Hub images | Anonymous Docker Hub pulls are capped at 10/hour per IP since April 2025, and the infra stack pulls 7 Hub images. Authenticate on the host: `sudo docker login`. See *Authenticate to Docker Hub* in Phase 6. |
 | App starts but reads literal `$Placeholder` values | The Run Command did not take effect, so `envsubst` never ran. Check Advanced → Run Command is `/bin/sh /entrypoint.sh`. |
 | `/entrypoint.sh: not found`, or it is a directory | The bind-mount source is missing on the node the task landed on. See Phase 8a. |
 | A service resolves to two addresses | A preview is claiming a production alias. The preview-host Application must have **no** `Aliases` in its Swarm network setting. See README *Why two Applications per repo*. |
