@@ -159,8 +159,22 @@ python scripts/dokploy/provision.py --role preview --only mavera-audit --apply
 
 The target project and environment default to `mavera` / `production` and are settable by name
 (`--project` / `--environment`) or by id (`--project-id` / `--environment-id`, for when two projects
-share a name). Every run prints which project and environment it resolved before writing anything, and
-an unknown name produces a listing of what is actually there rather than a failed guess.
+share a name). Every run prints which project and environment it resolved, and the applications already
+in it, before writing anything; an unknown name produces a listing of what is actually there rather
+than a failed guess.
+
+Two things make re-runs safe, which matters because a 29-service run can fail half-way:
+
+- **Existing applications are found via `environment.one`**, the endpoint the Dokploy UI uses, falling
+  back to `project.all` only if that fails. `project.all`'s response shape is not described in
+  Dokploy's OpenAPI document, so relying on it to nest applications would risk missing one and creating
+  a duplicate. The names it found are printed, not just counted, so the decision is auditable.
+- **`--update-only`** refuses to create anything and fails instead — the safe way to resume.
+
+`provision.py` also fills in required request fields from the instance's own OpenAPI document, printing
+each one. Dokploy's tRPC input schemas gain required fields between releases (`saveBuildType` picked up
+`herokuVersion` and `railpackVersion`), and discovering those one HTTP 400 at a time — part-way through
+a 29-service run — is worse than reading the schema up front.
 
 `generate-manifest.py` runs `docker compose --profile all config`, which does the `${VAR}` interpolation
 and the `x-placeholders` anchor merge, then writes `build/dokploy/manifest.json` and one fully-resolved
@@ -883,7 +897,8 @@ COMPOSE_PROFILES=platform docker compose up -d && docker compose ps
 | `docker-compose.infra.yml` | The 12 infrastructure/init containers, on `dokploy-network` |
 | `scripts/dokploy/generate-manifest.py` | Derives `build/dokploy/manifest.json` + one resolved env block per app from `docker-compose.yml` |
 | `scripts/dokploy/provision.py` | Creates/updates the Dokploy Applications over the API. Dry run by default |
-| `scripts/dokploy/test_provision.py` | Offline checks for the project/environment resolution, against fake API payloads |
+| `scripts/dokploy/test_provision.py` | Offline checks for project/environment resolution and the existing-application lookup |
+| `scripts/dokploy/test_schema.py` | Offline checks for the OpenAPI-driven required-field handling. `--spec <file>` checks against a spec dumped from your own instance |
 | `build/dokploy/` | Generated, gitignored. The env blocks hold real secrets |
 
 ### Local

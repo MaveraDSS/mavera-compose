@@ -112,6 +112,11 @@ class Dokploy:
         self.base = base_url.rstrip("/") + "/api"
         self.api_key = api_key
         self.dry_run = dry_run
+        # Set by check_api(). Dokploy's tRPC input schemas gain required fields
+        # between releases -- saveBuildType picked up herokuVersion and
+        # railpackVersion, for instance -- so rather than hard-coding a payload
+        # per version, fill whatever this instance says it requires.
+        self.spec: dict | None = None
 
     def _request(self, method: str, path: str, payload: dict | None = None) -> Any:
         url = f"{self.base}{path}"
@@ -134,8 +139,29 @@ class Dokploy:
     def get(self, path: str) -> Any:
         return self._request("GET", path)
 
+    def required_fields(self, path: str) -> dict:
+        """{field: schema} for fields this endpoint requires, from the spec."""
+        if not self.spec:
+            return {}
+        node = (self.spec.get("paths") or {}).get(path) or {}
+        schema = (
+            node.get("post", {})
+            .get("requestBody", {})
+            .get("content", {})
+            .get("application/json", {})
+            .get("schema", {})
+        )
+        props = schema.get("properties") or {}
+        return {f: props.get(f, {}) for f in (schema.get("required") or [])}
+
     def post(self, path: str, payload: dict) -> Any:
         """Write call. Printed and skipped unless --apply was passed."""
+        for field, schema in self.required_fields(path).items():
+            if field in payload:
+                continue
+            payload[field] = schema_default(schema)
+            print(f"      (auto-filled {field}={payload[field]!r}: required by "
+                  f"this Dokploy, not set by us)")
         if self.dry_run:
             redacted = redact(payload)
             print(f"    POST {path}")
@@ -143,6 +169,29 @@ class Dokploy:
                 print(f"      {key}: {value}")
             return {"dryRun": True}
         return self._request("POST", path, payload)
+
+
+def schema_default(schema: dict) -> Any:
+    """A harmless value of the right shape for a required field we do not set.
+
+    Prefers null wherever the schema allows it, which is what Dokploy's own UI
+    sends for the build-type fields that do not apply to the chosen builder.
+    """
+    variants = schema.get("anyOf") or schema.get("oneOf") or [schema]
+    types = {v.get("type") for v in variants}
+    if "null" in types:
+        return None
+    if "string" in types:
+        return ""
+    if "boolean" in types:
+        return False
+    if "array" in types:
+        return []
+    if "integer" in types or "number" in types:
+        return 0
+    if "object" in types:
+        return {}
+    return None
 
 
 SECRET_HINTS = ("pass", "secret", "key", "token", "crypto", "iv")
@@ -174,12 +223,18 @@ def redact(payload: dict) -> dict:
 
 
 def check_api(client: Dokploy) -> None:
-    """Fail early and loudly if this Dokploy does not expose what we need."""
+    """Fail early and loudly if this Dokploy does not expose what we need.
+
+    Also caches the spec so post() can fill in required fields this version has
+    added. Cheaper than discovering them one 400 at a time, half-way through a
+    29-service run.
+    """
     try:
         spec = client.get("/settings.getOpenApiDocument")
     except DokployError as error:
         sys.exit(f"could not read the OpenAPI document:\n{error}")
 
+    client.spec = spec
     paths = spec.get("paths") or {}
     missing = [p for p in REQUIRED_ENDPOINTS if p not in paths]
     if missing:
@@ -199,7 +254,7 @@ def check_api(client: Dokploy) -> None:
         .get("schema", {})
         .get("properties", {})
     )
-    for field in ("networkSwarm", "command"):
+    for field in ("networkSwarm", "command", "args"):
         if field not in update:
             sys.exit(
                 f"application.update on this Dokploy has no '{field}' field. "
@@ -284,13 +339,40 @@ def find_environment(
             )
 
     env = matches[0]
-    existing = {app["name"]: app for app in (env.get("applications") or [])}
+    env_id = env["environmentId"]
     print(
         f"target: project {found.get('name')!r} ({found.get('projectId')}) / "
-        f"environment {env.get('name')!r} ({env.get('environmentId')}) - "
-        f"{len(existing)} existing application(s)"
+        f"environment {env.get('name')!r} ({env_id})"
     )
-    return env["environmentId"], existing
+
+    # project.all's response shape is not described in Dokploy's OpenAPI
+    # document, so do not rely on it nesting applications: ask the endpoint the
+    # UI uses for an environment page, and only fall back if that fails. Getting
+    # this wrong means the existence check silently misses an application and a
+    # re-run creates a duplicate instead of updating.
+    existing: dict = {}
+    source = "environment.one"
+    try:
+        detail = client.get(f"/environment.one?environmentId={env_id}")
+        existing = {
+            app["name"]: app for app in ((detail or {}).get("applications") or [])
+        }
+    except DokployError as error:
+        print(f"  environment.one failed ({error}); falling back to project.all")
+        source = "project.all (fallback)"
+        existing = {app["name"]: app for app in (env.get("applications") or [])}
+    if not existing and (env.get("applications") or []):
+        source = "project.all (environment.one returned none)"
+        existing = {app["name"]: app for app in env["applications"]}
+
+    if existing:
+        print(f"  {len(existing)} existing application(s) via {source}:")
+        for name in sorted(existing):
+            app = existing[name]
+            print(f"    {name:45} {app.get('appName')}")
+    else:
+        print(f"  no existing applications reported (via {source})")
+    return env_id, existing
 
 
 def _project_listing(projects: list[dict]) -> str:
@@ -362,6 +444,7 @@ def provision(
     domains: dict,
     entrypoint_mode: str,
     entrypoint_host_path: str,
+    update_only: bool = False,
 ) -> dict:
     is_preview = role == "preview"
     name = f"{spec['name']}-pr" if is_preview else spec["name"]
@@ -371,6 +454,11 @@ def provision(
     if app:
         application_id = app["applicationId"]
         print(f"    exists: appName={app.get('appName')} - updating in place")
+    elif update_only:
+        sys.exit(
+            f"{name} does not exist and --update-only was given. Drop the flag "
+            "to create it."
+        )
     else:
         created = client.post(
             "/application.create",
@@ -414,6 +502,12 @@ def provision(
             "dockerfile": spec["dockerfile"],
             "dockerContextPath": "",
             "dockerBuildStage": "",
+            # Required by the endpoint even for buildType=dockerfile, where
+            # they mean nothing. Both are `string | null`; null is what the UI
+            # sends. Omitting them fails with
+            # "expected nonoptional, received undefined".
+            "herokuVersion": None,
+            "railpackVersion": None,
         },
     )
 
@@ -556,6 +650,12 @@ def main() -> None:
         "--preview-wildcard",
         help="e.g. '*.preview.example.com'. Omit to use Dokploy's sslip.io default.",
     )
+    parser.add_argument(
+        "--update-only",
+        action="store_true",
+        help="never create; fail if an application is missing. Use this to "
+        "safely resume after a run failed part-way through.",
+    )
     parser.add_argument("--list", action="store_true", help="show what exists, then exit")
     parser.add_argument(
         "--selftest",
@@ -592,10 +692,15 @@ def main() -> None:
         )
 
     if args.list:
-        for name in sorted(existing):
-            app = existing[name]
-            print(f"  {name:45} appName={app.get('appName')} "
-                  f"previews={app.get('isPreviewDeploymentsActive')}")
+        if existing:
+            print()
+            for name in sorted(existing):
+                app = existing[name]
+                print(f"  {name:45} appName={app.get('appName')} "
+                      f"previews={app.get('isPreviewDeploymentsActive')} "
+                      f"buildType={app.get('buildType')}")
+        print("\nThis is the same listing the provisioning run uses to decide "
+              "create-vs-update.")
         return
 
     if args.apply:
@@ -643,6 +748,7 @@ def main() -> None:
                 client, spec, args.role, environment_id, existing, gh_id,
                 env_block, args.preview_limit, args.preview_wildcard, domains,
                 args.entrypoint_mode, args.entrypoint_host_path,
+                args.update_only,
             )
         )
 

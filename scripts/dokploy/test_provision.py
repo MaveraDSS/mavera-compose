@@ -15,9 +15,20 @@ class FakeClient:
     def __init__(self, projects):
         self.projects = projects
 
+    def __getattr__(self, name):
+        raise AttributeError(name)
+
     def get(self, path):
-        assert path == "/project.all", path
-        return self.projects
+        if path == "/project.all":
+            return self.projects
+        if path.startswith("/environment.one?environmentId="):
+            wanted = path.split("=", 1)[1]
+            for p in self.projects:
+                for e in p.get("environments") or []:
+                    if e.get("environmentId") == wanted:
+                        return e
+            return {}
+        raise AssertionError(f"unexpected GET {path}")
 
 
 PROJECTS = [
@@ -48,7 +59,12 @@ DUPES = [
 results = []
 
 
-def check(label, fn, expect_exit=None, expect_env=None):
+def check(label, ok, detail=""):
+    """Boolean form, for assertions that are not about find_environment exits."""
+    results.append((bool(ok), label, str(detail)))
+
+
+def check_env(label, fn, expect_exit=None, expect_env=None):
     buf = io.StringIO()
     try:
         with redirect_stdout(buf):
@@ -70,37 +86,91 @@ def check(label, fn, expect_exit=None, expect_env=None):
 
 c = FakeClient(PROJECTS)
 
-check("default name lookup",
+check_env("default name lookup",
       lambda: prov.find_environment(c, "mavera", "production"), expect_env="env-prod")
-check("non-default project name",
+check_env("non-default project name",
       lambda: prov.find_environment(c, "Other Project", "production"), expect_env="env-other")
-check("case-insensitive project",
+check_env("case-insensitive project",
       lambda: prov.find_environment(c, "MAVERA", "production"), expect_env="env-prod")
-check("case-insensitive environment",
+check_env("case-insensitive environment",
       lambda: prov.find_environment(c, "mavera", "Production"), expect_env="env-prod")
-check("non-default environment",
+check_env("non-default environment",
       lambda: prov.find_environment(c, "mavera", "staging"), expect_env="env-stage")
-check("lookup by projectId",
+check_env("lookup by projectId",
       lambda: prov.find_environment(c, "ignored", "production", "proj-other"),
       expect_env="env-other")
-check("lookup by environmentId",
+check_env("lookup by environmentId",
       lambda: prov.find_environment(c, "mavera", "ignored", None, "env-stage"),
       expect_env="env-stage")
-check("unknown project lists candidates",
+check_env("unknown project lists candidates",
       lambda: prov.find_environment(c, "nope", "production"),
       expect_exit="no project named")
-check("unknown environment lists candidates",
+check_env("unknown environment lists candidates",
       lambda: prov.find_environment(c, "mavera", "nope"),
       expect_exit="has no environment")
-check("unknown projectId",
+check_env("unknown projectId",
       lambda: prov.find_environment(c, "x", "production", "proj-missing"),
       expect_exit="no project with projectId")
-check("duplicate names are rejected, not guessed",
+check_env("duplicate names are rejected, not guessed",
       lambda: prov.find_environment(FakeClient(DUPES), "mavera", "production"),
       expect_exit="projects are named")
-check("empty project list",
+check_env("empty project list",
       lambda: prov.find_environment(FakeClient([]), "mavera", "production"),
       expect_exit="no projects")
+
+
+# --- the existence check must not silently miss an application ---------------
+# Getting this wrong means a re-run creates a duplicate instead of updating.
+
+class BrokenEnvOne(FakeClient):
+    """environment.one errors; the nested project.all data must be used."""
+
+    def get(self, path):
+        if path.startswith("/environment.one"):
+            raise prov.DokployError("GET /environment.one -> 404")
+        return super().get(path)
+
+
+class EmptyEnvOne(FakeClient):
+    """environment.one answers but omits applications; fall back rather than
+    conclude the environment is empty."""
+
+    def get(self, path):
+        if path.startswith("/environment.one"):
+            return {"environmentId": "env-prod"}
+        return super().get(path)
+
+
+def existing_names(client, **kw):
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        _, existing = prov.find_environment(client, "mavera", "production", **kw)
+    return set(existing), buf.getvalue()
+
+
+names, out = existing_names(FakeClient(PROJECTS))
+check("environment.one is the primary source",
+      names == {"mavera-audit"} and "via environment.one" in out,
+      f"{sorted(names)}")
+
+names, out = existing_names(BrokenEnvOne(PROJECTS))
+check("environment.one failure falls back to project.all",
+      names == {"mavera-audit"} and "fallback" in out,
+      f"{sorted(names)}")
+
+names, out = existing_names(EmptyEnvOne(PROJECTS))
+check("empty environment.one falls back rather than reporting none",
+      names == {"mavera-audit"},
+      f"{sorted(names)}")
+
+names, out = existing_names(FakeClient(PROJECTS), environment_id="env-stage")
+check("genuinely empty environment reports none",
+      names == set() and "no existing applications" in out,
+      f"{sorted(names)}")
+
+names, out = existing_names(FakeClient(PROJECTS))
+check("existing application names are printed, not just counted",
+      "mavera-audit" in out and "mavera-audit-k3f9qz" in out)
 
 for ok, label, detail in results:
     print(f"{'PASS' if ok else 'FAIL'}  {label:45} {detail}")

@@ -686,6 +686,18 @@ python scripts/dokploy/provision.py                # dry run, all 29
 python scripts/dokploy/provision.py --apply
 ```
 
+**If a run fails part-way through**, re-run it — the script matches existing applications by name and
+updates them in place rather than creating a second one. Check what it sees first:
+
+```bash
+python scripts/dokploy/provision.py --list
+python scripts/dokploy/provision.py --only mavera-audit --update-only --apply
+```
+
+`--list` prints the same listing the provisioning run uses to decide create-vs-update, so if your
+half-provisioned service appears there, the re-run will update it. `--update-only` makes that
+guarantee explicit: it refuses to create anything, and fails instead.
+
 Then deploy from the UI in this order, so each group comes up against something that already answers:
 
 | Step | Services |
@@ -874,6 +886,8 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | `pull access denied for minio/mc` / `for minio/minio` | MinIO deleted its Docker Hub repositories. Both images now come from `quay.io` and are pinned in the compose files — make sure you are deploying a revision that has that change. |
 | `No such image: alpine:3` (or any other image) right after a failed pull | Collateral: one failed pull aborts the whole `up`, and Compose then cannot create the remaining containers. Fix the *first* pull error in the log and re-deploy; the rest usually clear on their own. |
 | `pull access denied` / `toomanyrequests` on several Docker Hub images | Anonymous Docker Hub pulls are capped at 10/hour per IP since April 2025, and the infra stack pulls 7 Hub images. Authenticate on the host: `sudo docker login`. See *Authenticate to Docker Hub* in Phase 6. |
+| `Input validation failed` / `expected nonoptional, received undefined` from an `application.*` call | Dokploy added a required field to that endpoint's input schema. `provision.py` fills required fields from your instance's own OpenAPI document and prints each one it auto-filled, so a re-run normally clears it. If it does not, the failing field name is in the `zodError` and needs adding to the payload in `provision.py`. |
+| A run failed part-way through one service | Re-run it. `provision.py` matches existing applications by name and updates in place. Confirm first with `--list` that the half-made application is listed; then re-run, optionally with `--update-only` so it can only update, never create. |
 | App starts but reads literal `$Placeholder` values | The Run Command did not take effect, so `envsubst` never ran. Check Advanced → Run Command: it should be `/bin/sh` with the script as the first argument (inline mode), or `/bin/sh /entrypoint.sh` (bind mode). |
 | `/entrypoint.sh: not found`, or it is a directory | `--entrypoint-mode bind` only: the bind-mount source is missing on the node the task landed on, so Docker created it as a directory. See Phase 8a. The default inline mode cannot hit this. |
 | A service resolves to two addresses | A preview is claiming a production alias. The preview-host Application must have **no** `Aliases` in its Swarm network setting. See README *Why two Applications per repo*. |
