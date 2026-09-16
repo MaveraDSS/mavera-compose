@@ -743,15 +743,30 @@ broken Application reaches a deploy.
 The symptom is the app reading literal `$Placeholder` values. The two-line check, in the container
 (Dokploy's terminal, or `docker exec` on the task):
 
-```sh
-# 1. did the entrypoint run at all?
-#    Expect: [entrypoint] appsettings.json rendered; starting <APP_DLL>
-#    Nothing at all means the image's own ENTRYPOINT ran instead.
+The entrypoint now reports enough to tell these apart without guessing. A healthy start looks like:
 
-# 2. is the environment actually there?
-env | grep -c '^[A-Za-z_]*='          # expect ~170, not a handful
-echo "$APP_DLL"                        # expect e.g. Mavera-Audit.dll
-grep -c '\$[A-Za-z_]' /app/appsettings.json   # expect 0 after rendering
+```
+[entrypoint] rendered: /app/appsettings.json /app/appsettings.Production.json
+[entrypoint] UNSET (rendered as empty strings):
+    $Okta_Domain
+    $MailSettings_ApiKey
+[entrypoint] appsettings.json rendered; starting Mavera-Audit.dll
+```
+
+- **No `[entrypoint]` lines at all** — the script never ran; the image's own ENTRYPOINT did. The
+  `command`/`args` did not reach the container.
+- **`rendered:` missing a file** that .NET loads — that file keeps its literal `$Placeholder` values
+  and overrides the rendered ones.
+- **A name in `UNSET`** that should have a value — the environment does not contain that exact
+  spelling. Blank `Okta_*`, `Mail*`, `Sms*` and `Smb*` entries are expected (see *Secrets you can
+  leave blank for now*); anything else is a real mismatch.
+
+```sh
+# in the container
+env | grep -c '^[A-Za-z_]*='                     # ~337 with case aliases, not a handful
+echo "$APP_DLL"                                   # e.g. Mavera-Audit.dll
+ls /app/appsettings*.json                         # every one of these must be in `rendered:`
+grep -o '\$[A-Za-z_][A-Za-z0-9_]*' /app/appsettings*.json | sort -u   # expect nothing
 ```
 
 If the entrypoint never ran, the `command`/`args` did not reach the container. Switch to the
@@ -965,6 +980,7 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | Build installs the wrong .NET major (e.g. 6.0 for a net8.0 project), or ignores `dockerfile/Dockerfile` | The Application is still on Dokploy's default `buildType` of `nixpacks`, which auto-detects the language and picks its own SDK. Almost always means `saveBuildType` failed earlier in the run. Check with `provision.py --list` (it prints `buildType=`) or `--verify-only`, then re-run with `--apply`. |
 | A run failed part-way through one service | Re-run it. `provision.py` matches existing applications by name and updates in place. Confirm first with `--list` that the half-made application is listed; then re-run, optionally with `--update-only` so it can only update, never create. |
 | App starts but reads literal `$Placeholder` values, e.g. `Configuration value '$log_Level' is not supported` | **The entrypoint did not run.** This is diagnostic, not ambiguous: `envsubst` replaces an *unset* variable with the empty string, so a surviving literal `$name` can only mean the file was never rendered. Check Advanced → Run Command, and see *When the entrypoint does not run* below. |
+| A literal `$Placeholder` survives even though the entrypoint ran | It is in a config file the entrypoint did not render. `.NET` loads `appsettings.$ASPNETCORE_ENVIRONMENT.json` *on top of* `appsettings.json`, and an unrendered override silently wins. `entrypoint.sh` now renders every `appsettings*.json` and logs which ones — check `[entrypoint] rendered:` in the logs. |
 | A placeholder renders to an empty value rather than a literal | `envsubst` ran, but no environment variable matched that placeholder. **Names are case-sensitive on Linux**, and the repos disagree on capitalisation, which is why `generate-manifest.py` emits both spellings of every placeholder. If a value is still empty, the template uses a spelling neither variant covers — compare it against `build/dokploy/env/<service>.env` and add it to `x-placeholders`. |
 | `/entrypoint.sh: not found`, or it is a directory | `--entrypoint-mode bind` only: the bind-mount source is missing on the node the task landed on, so Docker created it as a directory. See Phase 8a. The default inline mode cannot hit this. |
 | A service resolves to two addresses | A preview is claiming a production alias. The preview-host Application must have **no** `Aliases` in its Swarm network setting. See README *Why two Applications per repo*. |

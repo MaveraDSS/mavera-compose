@@ -174,6 +174,32 @@ When a value arrives empty, or a placeholder survives as a literal, check inside
 grep -oE '"\$[A-Za-z_][A-Za-z0-9_]*"' /app/appsettings.json | sort -u
 ```
 
+### The entrypoint renders every `appsettings*.json`
+
+Not just the base file. `ASPNETCORE_ENVIRONMENT` is set to `Production`, so .NET loads
+`appsettings.Production.json` *on top of* `appsettings.json` wherever a repo has one — and an
+unrendered override silently wins over a rendered base. The symptom is a literal `$Placeholder`
+reaching the app even though the entrypoint clearly ran.
+
+It also reports what it did, because the two failure modes look nothing alike from the app's side:
+
+```
+[entrypoint] rendered: /app/appsettings.json /app/appsettings.Production.json
+[entrypoint] UNSET (rendered as empty strings):
+    $Okta_Domain
+[entrypoint] appsettings.json rendered; starting Mavera-Audit.dll
+```
+
+A literal `$Name` surviving means the file was never rendered. A value arriving **empty** means the
+variable was not set under that exact spelling — `envsubst` substitutes the empty string for an unset
+name rather than leaving the literal, so without the `UNSET` list that failure is completely silent.
+Several placeholders are intentionally blank (the Okta, mail, SMS and SMB secrets), so the list is
+informational, not an error.
+
+`scripts/dokploy/test_entrypoint.sh` exercises all of this against a throwaway `/app`. Run it on
+Linux for full coverage — one case covers case-sensitivity, which cannot be demonstrated on Windows,
+where environment lookups are case-insensitive.
+
 ### Provisioning
 
 Nothing is hand-maintained. `docker-compose.yml` stays the source of truth for configuration, and the
@@ -956,7 +982,7 @@ COMPOSE_PROFILES=platform docker compose up -d && docker compose ps
 |---|---|
 | `.env.example` | Every knob, documented |
 | `Databases.zip` | Backups of the three data-bearing SQL databases, restored on first deploy |
-| `config/entrypoint.sh` | envsubst wrapper. Bind-mounted by Compose locally; sent inline as container args by `provision.py` on Dokploy |
+| `config/entrypoint.sh` | envsubst wrapper for **every** `appsettings*.json`. Bind-mounted by Compose locally; sent inline as container args by `provision.py` on Dokploy |
 | `config/otel-collector.yaml` | OTLP gRPC → Seq |
 | `config/mssql-restore.sh` | Restores the three data-bearing databases; leaves a populated one alone |
 | `config/mssql-init/00-init-databases.sql` | The 4 empty SQL catalogs, and a report on all 7 |
