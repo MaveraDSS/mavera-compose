@@ -28,8 +28,10 @@ the guess by reading the relevant controller, component or handler; drop repos t
 
 ## 3. Branch, per repo
 
-For each repo to change: read its `CLAUDE.md` when it exists (root and app-level for the frontend), otherwise
-`reference/repos.md`. Then `git status --porcelain` and `git rev-parse --abbrev-ref HEAD`. If the repo is dirty
+For each repo to change: read its `CLAUDE.md` in full when it exists (root and app-level for the frontend),
+otherwise `reference/repos.md`. The session is usually opened in the repos root, so Claude Code has not loaded
+those files for you; their rules apply regardless. Then `git -C <repo> status --porcelain` and
+`git -C <repo> rev-parse --abbrev-ref HEAD`. If the repo is dirty
 or not on `develop`, stop and ask; never stash and never switch a dirty tree. Otherwise `git pull --ff-only` and
 create the branch in that repo's format (see the table). Report each branch name.
 

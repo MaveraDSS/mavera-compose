@@ -19,6 +19,21 @@ none and as a quick orientation. Base branch is `develop` everywhere.
 | `mavera-integration` | public Integration API (.NET 10, Clean Architecture, Result pattern) | yes | per its CLAUDE.md | `DSS-1234 - description` | `dotnet test Mavera-Integration.slnx` | squash |
 | `mavera-compose` | fleet compose, devenv, this plugin | yes | `dss-1234_kebab-slug` | `DSS-1234: ...` | `dotnet test` in `devenv/` | PR to develop |
 
+## Working from the repos root
+
+The recommended session is opened in the repos root folder (for example `~/source/repos`), not inside one
+repo. Consequences:
+
+- Claude Code loads only the root folder's `CLAUDE.md`, not the repos' own. **Before editing or committing in a
+  repo, read its `CLAUDE.md` in full** (root and, for the frontend, `apps/dss/CLAUDE.md`). Its rules bind even
+  though they were not loaded automatically.
+- Run every command with an explicit repo path: `git -C <repo> status`, `dotnet test <repo>/<solution>`,
+  `pnpm -C <repos>/verisk-nordics-frontend --filter dss run gate:tests:run`; or `cd <repo> && ...` in one shell
+  line. Never assume the shell's current directory is the repo.
+- Git hooks (`core.hooksPath .githooks`) run for `git -C <repo> commit` exactly as they would inside the repo.
+- Search with `rg <pattern> <repo>/` so results stay inside the repo you mean; a bare `rg` from the root walks
+  every repo and `node_modules`.
+
 ## Rules that hold in every repo
 
 - Never commit on `develop` or `master`. Check `git status --porcelain` and `git rev-parse --abbrev-ref HEAD`

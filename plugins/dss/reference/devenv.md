@@ -12,12 +12,19 @@ dotnet run --project <DEVENV>/src/Devenv -- <command> [options] --root <DEVENV>
 In this order, stop at the first that contains `manifest.json`:
 
 1. `$DEVENV_ROOT` when set.
-2. `<git toplevel of the current directory>/../mavera-compose/devenv` (repos are cloned side by side).
-3. `~/source/repos/mavera-compose/devenv`, then `C:\source\repos\mavera-compose\devenv` on Windows.
-4. Ask the developer where mavera-compose is cloned. Never clone it yourself.
+2. `<cwd>/mavera-compose/devenv`: the session was opened in the **repos root**, the recommended way to work
+   (every repo is visible, no directory switching).
+3. `<git toplevel of the current directory>/devenv`: the session was opened inside mavera-compose itself
+   (its `CLAUDE.md` is then loaded automatically; the other repos are one level up, `<toplevel>/..`).
+4. `<git toplevel of the current directory>/../mavera-compose/devenv`: the session was opened inside another repo.
+5. `~/source/repos/mavera-compose/devenv`, then `C:\source\repos\mavera-compose\devenv` on Windows.
+6. Ask the developer where mavera-compose is cloned. Never clone it yourself.
+
+Any other folder works too when `DEVENV_ROOT` is set (for example in the shell profile).
 
 The repos root (parent of mavera-compose) is where devenv expects every other repo, unless
-`<DEVENV>/devenv.local.json` sets `reposRoot`.
+`<DEVENV>/devenv.local.json` sets `reposRoot`. `devenv setup` writes a short `CLAUDE.md` into the repos root
+(when none exists) that names the repos and points at these skills.
 
 ## Commands the skills use
 

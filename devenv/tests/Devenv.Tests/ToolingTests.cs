@@ -80,6 +80,25 @@ public class ToolingTests : IDisposable
         Assert.Contains(Auth.TestPasswordKey, keys);
     }
 
+    // ----------------------------------------------------------- claude.md
+
+    [Fact]
+    public void ReposRootClaudeMdNamesTheReposAndTheSkillsAndIsNeverOverwritten()
+    {
+        var m = Fixture.Manifest();
+        var text = ReposRootClaudeMd.Render(m);
+        Assert.Contains("`verisk-nordics-frontend`", text);
+        Assert.Contains("`mavera-libertine`", text);
+        Assert.Contains("`mavera-evaluation-service`", text);
+        Assert.Contains("/dss:ticket", text);
+        Assert.Contains("read its `CLAUDE.md`", text);
+
+        Assert.True(ReposRootClaudeMd.WriteIfMissing(m, _root));
+        File.WriteAllText(Path.Combine(_root, "CLAUDE.md"), "mine");
+        Assert.False(ReposRootClaudeMd.WriteIfMissing(m, _root));
+        Assert.Equal("mine", File.ReadAllText(Path.Combine(_root, "CLAUDE.md")));
+    }
+
     // ---------------------------------------------------------------- status
 
     [Fact]

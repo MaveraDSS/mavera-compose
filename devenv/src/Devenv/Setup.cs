@@ -239,6 +239,52 @@ public static class SecretsSetup
     }
 }
 
+/// <summary>`devenv setup`, Claude Code part: a CLAUDE.md for the repos root, so a session opened there knows what the folder holds and which skills to use.</summary>
+public static class ReposRootClaudeMd
+{
+    public const string FileName = "CLAUDE.md";
+
+    public static string Render(Manifest manifest)
+    {
+        var repos = new List<string> { manifest.Frontend.Repo, manifest.Gateway.Repo, "mavera-compose" };
+        repos.AddRange(manifest.Services.Where(s => s.Project is not null).Select(s => s.Repo));
+        var lines = new List<string>
+        {
+            "# CLAUDE.md — repos root",
+            "",
+            "This folder holds the Mavera DSS repositories side by side; it is not a git repository itself. Written by",
+            "`devenv setup` (mavera-compose/devenv); edit freely, it is yours.",
+            "",
+            "- `mavera-compose/devenv` runs the frontend, libertine and chosen services locally against dev02:",
+            "  `dotnet run --project mavera-compose/devenv/src/Devenv -- <up|status|logs|down> --root mavera-compose/devenv`.",
+            "- Claude Code plugin `dss` (from mavera-compose): `/dss:dev-env <ticket>` starts the right stack for a ticket,",
+            "  `/dss:verify <ticket>` checks the running stack with evidence, `/dss:ticket <ticket>` works a ticket end to end.",
+            "",
+            "## Rules for working from here",
+            "",
+            "- Each repository has its own conventions. Before editing or committing in one, read its `CLAUDE.md` in full",
+            "  (for the frontend also `apps/dss/CLAUDE.md`); those rules are not loaded automatically from this folder.",
+            "- Use explicit paths: `git -C <repo> ...`, `dotnet test <repo>/...`, `pnpm -C <repo> ...`, `rg <pattern> <repo>/`.",
+            "- Never commit on `develop`/`master`, never push or open a PR unless asked, no `Co-Authored-By` trailers.",
+            "",
+            "## Repositories devenv knows",
+            "",
+        };
+        lines.AddRange(repos.Distinct().Select(r => $"- `{r}`"));
+        lines.Add("");
+        return string.Join('\n', lines);
+    }
+
+    /// <summary>Writes the file when the repos root has none; never overwrites a developer's own.</summary>
+    public static bool WriteIfMissing(Manifest manifest, string reposRoot)
+    {
+        var path = Path.Combine(reposRoot, FileName);
+        if (File.Exists(path)) return false;
+        File.WriteAllText(path, Render(manifest));
+        return true;
+    }
+}
+
 /// <summary>`devenv setup`, frontend part: the pnpm workspace install, only when node_modules is missing or behind the lockfile.</summary>
 public static class FrontendPackages
 {

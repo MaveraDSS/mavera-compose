@@ -172,8 +172,11 @@ claude plugin install dss@mavera
 | `/dss:verify DSS-1234` | Checks the running stack against the ticket's "how to test": API calls through libertine with `devenv token`, and Claude driving Chrome (you log in once). Evidence lands in `.state/evidence/<ticket>/`. |
 | `/dss:ticket DSS-1234` | The whole loop: understand, start the stack, branch per repo convention, plan, implement after your yes, unit tests, restart the service, verify, commit. No push or PR unless asked. |
 
-The skills use `devenv status --json`, `devenv logs` and `devenv token`, and read each repo's own
-`CLAUDE.md` for how to branch and test there. Automated checks write only inside the test organisation named
+Open Claude Code in the **repos root** (the folder holding mavera-compose and the other repos side by side),
+not inside one repo: every repo is in reach and the skills find devenv at `./mavera-compose/devenv`. `setup`
+writes a short `CLAUDE.md` into that folder for this purpose (never overwriting yours). The skills use
+`devenv status --json`, `devenv logs` and `devenv token`, and read each repo's own `CLAUDE.md` before
+touching it, since Claude Code does not load those from the parent folder. Automated checks write only inside the test organisation named
 in `environments/<env>.json` (`testing`). The Jira connection (Atlassian MCP) is a one-time login per developer.
 
 ## Adding a service to the manifest (checklist)
