@@ -531,9 +531,9 @@ python scripts/dokploy/provision.py --entrypoint-mode bind \
   --entrypoint-host-path /opt/mavera/entrypoint.sh --apply
 ```
 
-Any absolute path on the Docker host works — `hostPath` is passed to Docker verbatim. **Do not put it
-under `/etc/dokploy`**: that is Dokploy's own directory, its layout is an implementation detail, and
-Dokploy prunes paths inside it.
+Any absolute path on the Docker host works — `hostPath` goes to Docker verbatim, with no validation,
+prefixing or normalisation. **Do not put it under `/etc/dokploy`**: that is Dokploy's own data root, and
+it prunes paths inside it (`rm -rf /etc/dokploy/applications/<appName>` on app or preview teardown).
 
 Three things that bite in this mode, and are the reason it is not the default:
 
@@ -551,20 +551,45 @@ Three things that bite in this mode, and are the reason it is not the default:
 
 #### Where is `/etc/dokploy`, anyway?
 
-You do not need it for the above, but if you are looking for Dokploy's own files — the clone of this
-repo, the generated `.env` — note that the base path is Dokploy's business and has differed between
-installs. Two things that catch people out: the Dokploy **web terminal and `docker exec` put you inside
-a container**, not on the host, and the directory may be root-owned (which gives *permission denied*,
-not *no such file*). Ask Docker instead of guessing:
+You do not need it for the default inline mode, but Phase 6 and Phase 10 reference it, so: on a standard
+install it is **always `/etc/dokploy`, on the host**. The path is a hardcoded ternary in
+`packages/server/src/constants/index.ts` — `/etc/dokploy` whenever `NODE_ENV=production` or the target
+is a remote server — and it is byte-identical from v0.20.0 through v0.30.6. There is **no environment
+variable that overrides it**, and it is not a named volume: the installer does
 
-```bash
-docker inspect dokploy \
-  --format '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
-docker service inspect dokploy \
-  --format '{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}' 2>/dev/null
+```sh
+mkdir -p /etc/dokploy && chmod 777 /etc/dokploy
+docker service create --name dokploy \
+  --mount type=bind,source=/etc/dokploy,target=/etc/dokploy ...
 ```
 
-Or find it from the clone Dokploy already made when you deployed the infra stack in Phase 6:
+so the container path and the host path are the same string. Under it: `compose/<appName>/code`,
+`applications/<appName>/code`, `traefik/`, `logs/`.
+
+If you cannot see it, the cause is almost certainly one of these, in order of likelihood:
+
+1. **You are not on the Docker host.** Dokploy's built-in web terminal and `docker exec` both put you
+   inside a *container*. You need a real SSH session to the VM.
+2. **Dokploy is on a different machine** than the one you are logged into — a separate Dokploy host, or
+   a multi-server setup where the apps run on a remote node. Remote nodes get their own `/etc/dokploy`,
+   provisioned over SSH by Dokploy's server setup.
+3. **A non-standard install.** Anything other than `curl -sSL https://dokploy.com/install.sh | bash`.
+
+Note it is `chmod 777`, so *permissions* are not the explanation — a root-owned-directory theory does
+not fit. Ask Docker rather than guessing:
+
+```bash
+# authoritative: the swarm service's declared mounts
+docker service inspect dokploy \
+  --format '{{range .Spec.TaskTemplate.ContainerSpec.Mounts}}{{.Type}}  {{.Source}} -> {{.Target}}{{"\n"}}{{end}}'
+# expect a line:  bind  /etc/dokploy -> /etc/dokploy
+
+# same from the running task, which also catches non-swarm installs
+docker inspect "$(docker ps -qf 'name=^dokploy\.')" \
+  --format '{{range .Mounts}}{{.Type}}  {{.Source}} -> {{.Destination}}{{"\n"}}{{end}}'
+```
+
+Or find it from the clone Dokploy made when you deployed the infra stack in Phase 6:
 
 ```bash
 sudo find / -name docker-compose.infra.yml -not -path '/proc/*' 2>/dev/null
@@ -597,10 +622,39 @@ the Compose file says — no second copy of the placeholder list to keep in sync
 ```bash
 export DOKPLOY_URL=https://dokploy.example.com
 export DOKPLOY_API_KEY=...            # Settings -> Profile -> API/CLI
+export DOKPLOY_PROJECT=mavera         # your project's name in the Dokploy UI
 
 python scripts/dokploy/provision.py --list
 python scripts/dokploy/provision.py --only mavera-audit          # prints every API call
 python scripts/dokploy/provision.py --only mavera-audit --apply
+```
+
+**The Dokploy project has to exist already** — create it in the UI first; `provision.py` never creates
+one. It targets project `mavera`, environment `production` by default. Override either way:
+
+| | flag | env var |
+|---|---|---|
+| project by name | `--project` | `DOKPLOY_PROJECT` |
+| project by id | `--project-id` | `DOKPLOY_PROJECT_ID` |
+| environment by name | `--environment` | `DOKPLOY_ENVIRONMENT` |
+| environment by id | `--environment-id` | `DOKPLOY_ENVIRONMENT_ID` |
+
+Names are matched exactly first, then case-insensitively. Dokploy does not enforce unique project
+names, so if two match you get an error listing their ids rather than a guess at which one you meant.
+Every run prints the target it resolved before it writes anything:
+
+```
+target: project 'mavera' (proj-abc123) / environment 'production' (env-def456) - 0 existing application(s)
+```
+
+Get the name wrong and it tells you what is actually there:
+
+```
+no project named 'mavera'. Available:
+  'mavera-dss'                        proj-abc123  [production, staging]
+  'sandbox'                           proj-def456  [production]
+
+Pass --project <name> (or --project-id) to pick one.
 ```
 
 `mavera-audit` is the right pilot: it is the one service verified end to end on the old setup, and it

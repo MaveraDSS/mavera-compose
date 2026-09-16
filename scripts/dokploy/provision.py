@@ -5,6 +5,12 @@ Run generate-manifest.py first. Then:
 
     export DOKPLOY_URL=https://dokploy.example.com
     export DOKPLOY_API_KEY=...            # Settings -> Profile -> API/CLI
+    export DOKPLOY_PROJECT=mavera         # or pass --project
+
+The Dokploy project and environment default to "mavera" / "production". Override
+with --project / --environment (or DOKPLOY_PROJECT / DOKPLOY_ENVIRONMENT), or
+with --project-id / --environment-id when names are ambiguous. The project must
+already exist -- create it in the UI. Run with --list to see what is there.
 
     python scripts/dokploy/provision.py --list                 # what exists now
     python scripts/dokploy/provision.py                        # dry run, all apps
@@ -64,8 +70,9 @@ NEWLINE = "\n"
 # "bind" is the fallback: the script is placed on the Docker host and
 # bind-mounted in. Use it if you would rather keep the script out of the Dokploy
 # database, or if inline args ever misbehave. Deliberately NOT under
-# /etc/dokploy -- that is Dokploy's own directory, its location has moved
-# between versions, and Dokploy prunes paths inside it.
+# /etc/dokploy: that is Dokploy's own data root (host bind mount, 1:1 into the
+# container) and it prunes paths inside it -- removeDirectoryCode rm -rf's
+# /etc/dokploy/applications/<appName> when an app or preview is torn down.
 ENTRYPOINT_SOURCE = REPO_ROOT / "config" / "entrypoint.sh"
 DEFAULT_ENTRYPOINT_HOST_PATH = "/srv/mavera/entrypoint.sh"
 ENTRYPOINT_MOUNT_PATH = "/entrypoint.sh"
@@ -201,27 +208,99 @@ def check_api(client: Dokploy) -> None:
     print("api check: all required endpoints and fields present")
 
 
-def find_environment(client: Dokploy, project: str, environment: str) -> tuple[str, dict]:
-    """Return (environmentId, {application name: application}) for the target."""
+def _match(items: list[dict], wanted: str, key: str) -> list[dict]:
+    """Exact match if there is one, else case-insensitive. Dokploy does not
+    enforce unique project names, so this can legitimately return several."""
+    exact = [i for i in items if i.get(key) == wanted]
+    if exact:
+        return exact
+    return [i for i in items if (i.get(key) or "").lower() == wanted.lower()]
+
+
+def find_environment(
+    client: Dokploy,
+    project: str,
+    environment: str,
+    project_id: str | None = None,
+    environment_id: str | None = None,
+) -> tuple[str, dict]:
+    """Resolve the target environment to (environmentId, {app name: app}).
+
+    Names are how people refer to these, but ids are what is unambiguous --
+    pass --project-id / --environment-id to skip the lookup entirely.
+    """
     projects = client.get("/project.all")
-    for candidate in projects:
-        if candidate.get("name") != project:
-            continue
-        for env in candidate.get("environments") or []:
-            if env.get("name") != environment:
-                continue
-            existing = {
-                app["name"]: app for app in (env.get("applications") or [])
-            }
-            return env["environmentId"], existing
+    if not projects:
         sys.exit(
-            f"project {project!r} has no environment {environment!r} "
-            f"(found: {[e.get('name') for e in candidate.get('environments') or []]})"
+            "this Dokploy has no projects, or the API key cannot see any. "
+            "Create the project in the UI first."
         )
-    sys.exit(
-        f"no project named {project!r} "
-        f"(found: {[c.get('name') for c in projects]})"
+
+    if project_id:
+        candidates = [p for p in projects if p.get("projectId") == project_id]
+        if not candidates:
+            sys.exit(
+                f"no project with projectId {project_id!r}. Available:\n"
+                + _project_listing(projects)
+            )
+    else:
+        candidates = _match(projects, project, "name")
+        if not candidates:
+            sys.exit(
+                f"no project named {project!r}. Available:\n"
+                + _project_listing(projects)
+                + "\n\nPass --project <name> (or --project-id) to pick one."
+            )
+        if len(candidates) > 1:
+            sys.exit(
+                f"{len(candidates)} projects are named {project!r}. "
+                "Disambiguate with --project-id:\n"
+                + _project_listing(candidates)
+            )
+
+    found = candidates[0]
+    environments = found.get("environments") or []
+
+    if environment_id:
+        matches = [e for e in environments if e.get("environmentId") == environment_id]
+        if not matches:
+            sys.exit(
+                f"project {found.get('name')!r} has no environment with "
+                f"environmentId {environment_id!r} "
+                f"(found: {[e.get('environmentId') for e in environments]})"
+            )
+    else:
+        matches = _match(environments, environment, "name")
+        if not matches:
+            sys.exit(
+                f"project {found.get('name')!r} has no environment "
+                f"{environment!r} (found: {[e.get('name') for e in environments]})"
+            )
+        if len(matches) > 1:
+            sys.exit(
+                f"project {found.get('name')!r} has {len(matches)} environments "
+                f"named {environment!r} - disambiguate with --environment-id: "
+                f"{[e.get('environmentId') for e in matches]}"
+            )
+
+    env = matches[0]
+    existing = {app["name"]: app for app in (env.get("applications") or [])}
+    print(
+        f"target: project {found.get('name')!r} ({found.get('projectId')}) / "
+        f"environment {env.get('name')!r} ({env.get('environmentId')}) - "
+        f"{len(existing)} existing application(s)"
     )
+    return env["environmentId"], existing
+
+
+def _project_listing(projects: list[dict]) -> str:
+    rows = []
+    for p in projects:
+        envs = ", ".join(
+            (e.get("name") or "?") for e in (p.get("environments") or [])
+        )
+        rows.append(f"  {p.get('name')!r:35} {p.get('projectId')}  [{envs}]")
+    return "\n".join(rows)
 
 
 def github_id(client: Dokploy, owner: str) -> str:
@@ -420,8 +499,29 @@ def provision(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", default="build/dokploy/manifest.json")
-    parser.add_argument("--project", default="mavera")
-    parser.add_argument("--environment", default="production")
+    parser.add_argument(
+        "--project",
+        default=os.environ.get("DOKPLOY_PROJECT", "mavera"),
+        help="Dokploy project name, as shown in the UI. Env: DOKPLOY_PROJECT. "
+        "Default: mavera",
+    )
+    parser.add_argument(
+        "--project-id",
+        default=os.environ.get("DOKPLOY_PROJECT_ID"),
+        help="use instead of --project when names are ambiguous. "
+        "Env: DOKPLOY_PROJECT_ID",
+    )
+    parser.add_argument(
+        "--environment",
+        default=os.environ.get("DOKPLOY_ENVIRONMENT", "production"),
+        help="environment within the project. Env: DOKPLOY_ENVIRONMENT. "
+        "Default: production",
+    )
+    parser.add_argument(
+        "--environment-id",
+        default=os.environ.get("DOKPLOY_ENVIRONMENT_ID"),
+        help="use instead of --environment. Env: DOKPLOY_ENVIRONMENT_ID",
+    )
     parser.add_argument(
         "--role",
         choices=["production", "preview"],
@@ -487,10 +587,9 @@ def main() -> None:
               f"{args.project}/{args.environment}, role {args.role}." + NEWLINE)
     else:
         environment_id, existing = find_environment(
-            client, args.project, args.environment
+            client, args.project, args.environment,
+            args.project_id, args.environment_id,
         )
-        print(f"{args.project}/{args.environment}: environmentId={environment_id}, "
-              f"{len(existing)} existing application(s)")
 
     if args.list:
         for name in sorted(existing):
@@ -553,11 +652,17 @@ def main() -> None:
         if state_path.exists():
             state = json.loads(state_path.read_text(encoding="utf-8"))
         # Re-read so the recorded appNames are the ones Dokploy actually assigned.
-        _, refreshed = find_environment(client, args.project, args.environment)
+        _, refreshed = find_environment(
+            client, args.project, args.environment,
+            args.project_id, args.environment_id,
+        )
         for result in results:
             app = refreshed.get(result["name"], {})
             state[result["name"]] = {
                 "role": result["role"],
+                "project": args.project,
+                "environment": args.environment,
+                "environmentId": environment_id,
                 "applicationId": result["applicationId"],
                 "appName": app.get("appName"),
             }

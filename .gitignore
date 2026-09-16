@@ -7,3 +7,7 @@ Databases/
 # hold RESOLVED secrets (DB_PASS, OKTA_*, CRYPTO_*), so they must never be
 # committed -- regenerate them instead.
 build/
+
+# Python bytecode from the provisioning scripts.
+__pycache__/
+*.pyc

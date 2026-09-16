@@ -130,8 +130,9 @@ the single source of truth; `provision.py` reads it at provisioning time.
 
 **Fallback (`--entrypoint-mode bind`): bind-mount it from the host**, default
 `/srv/mavera/entrypoint.sh`, overridable with `--entrypoint-host-path`. Deliberately *not* under
-`/etc/dokploy` — that is Dokploy's own directory, its layout is an implementation detail, and Dokploy
-prunes paths inside it. Deliberately a *bind* mount and not a Dokploy **file** mount: Dokploy builds a
+`/etc/dokploy` — that is Dokploy's own data root, and it prunes paths inside it
+(`removeDirectoryCode` does `rm -rf /etc/dokploy/applications/<appName>` when an app or a preview is
+torn down). Deliberately a *bind* mount and not a Dokploy **file** mount: Dokploy builds a
 file mount's source path from the **preview's** appName while writing the content under the
 **parent's**, so a preview would find an empty directory where the script should be. Bind mounts take
 an explicit host path and resolve identically for both.
@@ -145,12 +146,21 @@ Nothing is hand-maintained. `docker-compose.yml` stays the source of truth for c
 Dokploy side is derived from it:
 
 ```bash
+export DOKPLOY_URL=https://dokploy.example.com
+export DOKPLOY_API_KEY=...                       # Settings -> Profile -> API/CLI
+export DOKPLOY_PROJECT=mavera                    # or --project; the project must already exist
+
 python scripts/dokploy/generate-manifest.py      # docker compose config -> manifest + env blocks
 python scripts/dokploy/provision.py --list       # what exists in Dokploy now
 python scripts/dokploy/provision.py              # dry run: print every API call
 python scripts/dokploy/provision.py --apply      # create/update the 29 production Applications
 python scripts/dokploy/provision.py --role preview --only mavera-audit --apply
 ```
+
+The target project and environment default to `mavera` / `production` and are settable by name
+(`--project` / `--environment`) or by id (`--project-id` / `--environment-id`, for when two projects
+share a name). Every run prints which project and environment it resolved before writing anything, and
+an unknown name produces a listing of what is actually there rather than a failed guess.
 
 `generate-manifest.py` runs `docker compose --profile all config`, which does the `${VAR}` interpolation
 and the `x-placeholders` anchor merge, then writes `build/dokploy/manifest.json` and one fully-resolved
@@ -873,6 +883,7 @@ COMPOSE_PROFILES=platform docker compose up -d && docker compose ps
 | `docker-compose.infra.yml` | The 12 infrastructure/init containers, on `dokploy-network` |
 | `scripts/dokploy/generate-manifest.py` | Derives `build/dokploy/manifest.json` + one resolved env block per app from `docker-compose.yml` |
 | `scripts/dokploy/provision.py` | Creates/updates the Dokploy Applications over the API. Dry run by default |
+| `scripts/dokploy/test_provision.py` | Offline checks for the project/environment resolution, against fake API payloads |
 | `build/dokploy/` | Generated, gitignored. The env blocks hold real secrets |
 
 ### Local
