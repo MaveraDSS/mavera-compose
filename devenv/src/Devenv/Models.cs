@@ -14,6 +14,8 @@ public static class Json
     public static readonly JsonSerializerOptions Options = new()
     {
         PropertyNameCaseInsensitive = true,
+        // camelCase on output (status --json, processes.json); reading stays case-insensitive, so older PascalCase state files still load.
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
         WriteIndented = true,
@@ -187,7 +189,17 @@ public sealed class EnvironmentSpec
     public Dictionary<string, string> Placeholders { get; set; } = new();
     /// <summary>A URL that only answers when the VPN/Zscaler is connected.</summary>
     public string ConnectivityCheckUrl { get; set; } = "";
+    /// <summary>Where automated checks may create data in this environment.</summary>
+    public TestingSpec Testing { get; set; } = new();
     public string? Notes { get; set; }
+}
+
+/// <summary>The dedicated test organisation: the only place `/dss:verify` and `/dss:ticket` may write.</summary>
+public sealed class TestingSpec
+{
+    public string OrganizationId { get; set; } = "";
+    public string OrganizationName { get; set; } = "";
+    public bool Configured => !string.IsNullOrWhiteSpace(OrganizationId);
 }
 
 public sealed class OktaSpec

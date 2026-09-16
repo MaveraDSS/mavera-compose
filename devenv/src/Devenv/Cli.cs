@@ -3,6 +3,12 @@ namespace Devenv;
 public sealed class CliOptions
 {
     public string? Command { get; init; }
+    /// <summary>Second positional argument: the process name for `logs`.</summary>
+    public string? Target { get; init; }
+    /// <summary>logs: number of lines from the end.</summary>
+    public int Tail { get; init; } = 100;
+    /// <summary>status: print one JSON object instead of text.</summary>
+    public bool Json { get; init; }
     public List<string> Local { get; } = new();
     public string? Environment { get; init; }
     public string? ReposRoot { get; init; }
@@ -26,8 +32,9 @@ public sealed class CliOptions
 
     public static CliOptions Parse(string[] args)
     {
-        string? command = null, env = null, repos = null, root = null, branch = null, secretsImport = null;
-        bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false, allowMigrations = false, allowMail = false, noPrompt = false;
+        string? command = null, target = null, env = null, repos = null, root = null, branch = null, secretsImport = null;
+        bool detach = false, noInfra = false, skip = false, dry = false, supervisor = false, allowMigrations = false, allowMail = false, noPrompt = false, json = false;
+        var tail = 100;
         var local = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -48,18 +55,24 @@ public sealed class CliOptions
                 case "--allow-mail": allowMail = true; break;
                 case "--branch": branch = Next(a); break;
                 case "--no-prompt": noPrompt = true; break;
-                case "--secrets": secretsImport = Next(a); break;                case "--supervisor": supervisor = true; break;
+                case "--secrets": secretsImport = Next(a); break;
+                case "--json": json = true; break;
+                case "--tail":
+                    if (!int.TryParse(Next(a), out tail) || tail <= 0) throw new DevenvException("--tail needs a positive number");
+                    break;
+                case "--supervisor": supervisor = true; break;
                 default:
                     if (a.StartsWith('-')) throw new DevenvException($"unknown option {a}");
-                    if (command is not null) throw new DevenvException($"unexpected argument {a}");
-                    command = a;
+                    if (command is null) command = a;
+                    else if (target is null) target = a;
+                    else throw new DevenvException($"unexpected argument {a}");
                     break;
             }
         }
 
         var o = new CliOptions
         {
-            Command = command, Environment = env, ReposRoot = repos, Root = root, Detach = detach,
+            Command = command, Target = target, Tail = tail, Json = json, Environment = env, ReposRoot = repos, Root = root, Detach = detach,
             NoInfra = noInfra, SkipPreflight = skip, DryRun = dry, Supervisor = supervisor, AllowMigrations = allowMigrations,
             AllowMail = allowMail, Branch = branch, NoPrompt = noPrompt, SecretsImport = secretsImport,
         };
@@ -99,7 +112,9 @@ public static class Cli
                 "setup" => await Commands.SetupAsync(ws, options),
                 "up" => await Commands.UpAsync(ws, options),
                 "down" => await Commands.DownAsync(ws),
-                "status" => await Commands.StatusAsync(ws),
+                "status" => await Commands.StatusAsync(ws, options.Json),
+                "logs" => Commands.Logs(ws, options),
+                "token" => await Commands.TokenAsync(ws),
                 "render" => Commands.Render(ws, options),
                 "check" => await Commands.CheckAsync(ws),
                 _ => Unknown(options.Command),
@@ -141,7 +156,10 @@ public static class Cli
                         --local service (no start)
               up        clone missing repos, check, render, start infra (docker), libertine, the frontend and
                         --local services; Ctrl+C stops them
-              status    show what is running and whether it answers
+              status    show what is running and whether it answers (--json for one machine-readable object)
+              logs      print the end of a process log: logs <name> [--tail 100]; names as in status, or devenv
+              token     print a bearer token for API checks against the stack (password grant with TEST_USER /
+                        TEST_PASSWORD from secrets.json, through local libertine when it runs)
               down      stop everything `up` started, including the docker infra
 
             options
@@ -162,6 +180,8 @@ public static class Cli
               --no-infra                up: do not start RabbitMQ/Redis/Jaeger in docker
               --skip-preflight          up: skip the checks (not recommended)
               --dry-run                 render: print to stdout instead of writing the files
+              --json                    status: JSON instead of text
+              --tail <n>                logs: lines from the end (default 100)
               --root <path>             devenv folder (default: found from the current directory)
             """);
     }

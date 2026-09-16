@@ -113,7 +113,9 @@ If your repos are not next to mavera-compose, or you are not on dev02, copy `dev
 | `check` | Tools, repos, packages, secrets file, dev02 reachable (Zscaler), ports free. No changes. |
 | `render` | Writes libertine's `appsettings.Development.json`, the frontend `.env`, and the config of every `--local` service. `--dry-run` prints instead. |
 | `up` | `check` + `render`, starts docker infra, then the processes; waits until each answers; Ctrl+C stops the processes. `-d` leaves them running in the background and returns. |
-| `status` | Each process with pid, port and health; infra containers. |
+| `status` | Each process with pid, port and health; infra containers. `--json` prints one object for tools. |
+| `logs <name>` | The end of a process log (`--tail 100`), same on Mac and Windows. Names as in `status`, or `devenv` for the supervisor. |
+| `token` | A bearer token for API checks: password grant with `TEST_USER`/`TEST_PASSWORD` from `secrets.json`, through local libertine when it runs. Prints only the token, so `T=$(devenv token)` works. |
 | `down` | Stops everything `up` started, including the docker infra. |
 
 Options: `--local a,b` services to run here · `--branch <name>` for repos devenv has to clone ·
@@ -153,6 +155,26 @@ document-service, medical-advisor-network, caregivers, integration. notification
 blocked (sends real mail) until DSS-5587. Anything else needs its `project` path filled in first.
 
 Run the frontend flows that hit the service; the service log is in `.state/logs/<name>.log`.
+
+## Claude Code
+
+The `dss` plugin in this repository (`plugins/dss`, DSS-5588 and DSS-5647) gives Claude Code three commands
+that work in every repo once installed:
+
+```
+claude plugin marketplace add MaveraDSS/mavera-compose
+claude plugin install dss@mavera
+```
+
+| Command | What it does |
+|---|---|
+| `/dss:dev-env DSS-1234` | Reads the ticket, proposes the services to run locally with a reason each, and after your yes runs `devenv up -d --local ...`. |
+| `/dss:verify DSS-1234` | Checks the running stack against the ticket's "how to test": API calls through libertine with `devenv token`, and Claude driving Chrome (you log in once). Evidence lands in `.state/evidence/<ticket>/`. |
+| `/dss:ticket DSS-1234` | The whole loop: understand, start the stack, branch per repo convention, plan, implement after your yes, unit tests, restart the service, verify, commit. No push or PR unless asked. |
+
+The skills use `devenv status --json`, `devenv logs` and `devenv token`, and read each repo's own
+`CLAUDE.md` for how to branch and test there. Automated checks write only inside the test organisation named
+in `environments/<env>.json` (`testing`). The Jira connection (Atlassian MCP) is a one-time login per developer.
 
 ## Adding a service to the manifest (checklist)
 

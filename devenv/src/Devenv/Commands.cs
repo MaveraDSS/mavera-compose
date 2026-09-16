@@ -64,6 +64,11 @@ public static class Commands
         var interactive = !o.NoPrompt && !Console.IsInputRedirected;
         var blankRequired = SecretsSetup.Run(ws, interactive, o.SecretsImport);
 
+        Console.WriteLine("claude code (optional)");
+        Console.WriteLine("  the dss plugin gives Claude Code the /dss:dev-env, /dss:verify and /dss:ticket commands in every repo:");
+        Console.WriteLine("    claude plugin marketplace add MaveraDSS/mavera-compose");
+        Console.WriteLine("    claude plugin install dss@mavera");
+
         Console.WriteLine();
         if (blankRequired.Count == 0)
         {
@@ -390,42 +395,118 @@ public static class Commands
 
     // --------------------------------------------------------------- status
 
-    public static async Task<int> StatusAsync(Workspace ws)
+    public static async Task<int> StatusAsync(Workspace ws, bool json = false)
     {
-        var state = ReadState(ws);
-        Console.WriteLine($"devenv status  (environment {ws.Environment.Name})");
-        var exit = 0;
-        if (state is null)
+        var report = await BuildStatusAsync(ws);
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(report, Json.Options));
+            return report.Ok ? 0 : 1;
+        }
+
+        Console.WriteLine($"devenv status  (environment {report.Environment})");
+        if (report.Supervisor is null)
         {
             Console.WriteLine("  processes: none started by devenv");
-            exit = 1;
         }
         else
         {
-            Console.WriteLine($"  started {state.StartedAt:yyyy-MM-dd HH:mm}, supervisor pid {state.SupervisorPid} {(ProcessRunner.IsAlive(state.SupervisorPid) ? "(running)" : "(gone)")}");
+            Console.WriteLine($"  started {report.Supervisor.StartedAt:yyyy-MM-dd HH:mm}, supervisor pid {report.Supervisor.Pid} {(report.Supervisor.Alive ? "(running)" : "(gone)")}");
+            foreach (var p in report.Processes)
+            {
+                Console.WriteLine($"  {p.Name,-24} pid {p.Pid,-7} :{p.Port,-5} {(p.Alive ? "running" : "stopped"),-8} {p.HealthUrl ?? "(port check)"} -> {p.Detail}");
+            }
+        }
+        if (report.InfraEnabled)
+        {
+            Console.WriteLine(report.Infra is null
+                ? "  infra: docker not available"
+                : report.Infra.Count == 0 ? "  infra: not running" : $"  infra: {string.Join(", ", report.Infra)}");
+        }
+        Console.WriteLine($"  database: {report.Database}");
+        foreach (var s in report.LocalServices)
+        {
+            Console.WriteLine($"  {s.Name}: {s.Path} @ {s.Branch ?? "(not cloned)"}");
+        }
+        return report.Ok ? 0 : 1;
+    }
+
+    /// <summary>The status as data: the text view and `--json` both render this.</summary>
+    public static async Task<StatusReport> BuildStatusAsync(Workspace ws)
+    {
+        var report = new StatusReport
+        {
+            Environment = ws.Environment.Name,
+            Database = ws.Environment.Sql.Host,
+            FrontendUrl = ws.FrontendOrigin,
+            LibertineUrl = ws.GatewayOrigin,
+            LogDir = ws.LogDir,
+            InfraEnabled = ws.Local.Infra,
+            Testing = ws.Environment.Testing,
+        };
+        var state = ReadState(ws);
+        var ok = state is not null;
+        if (state is not null)
+        {
+            report.Supervisor = new SupervisorStatus { Pid = state.SupervisorPid, Alive = ProcessRunner.IsAlive(state.SupervisorPid), StartedAt = state.StartedAt };
             foreach (var p in state.Processes)
             {
                 var alive = ProcessRunner.IsAlive(p.Pid);
                 var health = alive ? await Health.ProbeAsync(p) : new HealthResult(false, "process gone");
-                Console.WriteLine($"  {p.Name,-24} pid {p.Pid,-7} :{p.Port,-5} {(alive ? "running" : "stopped"),-8} {p.HealthUrl ?? "(port check)"} -> {health.Detail}");
-                if (!alive || !health.Ok) exit = 1;
+                report.Processes.Add(new ProcessStatus
+                {
+                    Name = p.Name, Pid = p.Pid, Port = p.Port, Alive = alive, Healthy = health.Ok, Detail = health.Detail, HealthUrl = p.HealthUrl, LogFile = p.LogFile,
+                });
+                ok &= alive && health.Ok;
             }
         }
-
         if (ws.Local.Infra)
         {
-            var running = await Infra.RunningAsync(ws);
-            Console.WriteLine(running is null
-                ? "  infra: docker not available"
-                : running.Count == 0 ? "  infra: not running" : $"  infra: {string.Join(", ", running)}");
+            report.Infra = (await Infra.RunningAsync(ws))?.ToList();
         }
-        Console.WriteLine($"  database: {ws.Environment.Sql.Host}");
         foreach (var s in ws.LocalServices)
         {
-            var branch = await Repos.CurrentBranchAsync(ws.RepoPath(s.Repo));
-            Console.WriteLine($"  {s.Name}: {ws.RepoPath(s.Repo)} @ {branch ?? "(not cloned)"}");
+            report.LocalServices.Add(new LocalServiceStatus
+            {
+                Name = s.Name, Repo = s.Repo, Path = ws.RepoPath(s.Repo), Branch = await Repos.CurrentBranchAsync(ws.RepoPath(s.Repo)), Port = s.Port,
+                HealthUrl = s.HealthPath is null ? null : $"http://localhost:{s.Port}{s.HealthPath}",
+            });
         }
-        return exit;
+        report.Ok = ok;
+        return report;
+    }
+
+    // ----------------------------------------------------------------- logs
+
+    public static int Logs(Workspace ws, CliOptions o)
+    {
+        var name = o.Target ?? "devenv";
+        var file = Path.Combine(ws.LogDir, name + ".log");
+        if (!File.Exists(file))
+        {
+            var available = LogTail.Available(ws.LogDir);
+            throw new DevenvException(available.Count == 0
+                ? $"no logs yet in {ws.LogDir}; nothing has been started"
+                : $"no log for '{name}'; available: {string.Join(", ", available)}");
+        }
+        // Read with sharing: the process is still writing to it.
+        using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+        var lines = new List<string>();
+        while (reader.ReadLine() is { } line) lines.Add(line);
+        foreach (var line in LogTail.Last(lines, o.Tail)) Console.WriteLine(line);
+        return 0;
+    }
+
+    // ---------------------------------------------------------------- token
+
+    /// <summary>Prints only the token on stdout, so `T=$(devenv token)` works; everything else goes to stderr.</summary>
+    public static async Task<int> TokenAsync(Workspace ws)
+    {
+        var token = await Auth.GetTokenAsync(ws);
+        Console.Error.WriteLine($"token for {ws.Secrets[Auth.TestUserKey]} via {token.Origin}/connect/token, expires in {token.ExpiresIn}s");
+        Console.WriteLine(token.AccessToken);
+        return 0;
     }
 
     // -------------------------------------------------------------- helpers
