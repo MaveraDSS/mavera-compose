@@ -151,9 +151,25 @@ check("empty previewEnv is caught",
 
 
 # --- defensive: partial / unreadable responses -------------------------------
+# A field the API does not return cannot be checked. For most fields that is
+# tolerable and silently skipped. For the few the design rests on, silence is
+# how a broken Application gets deployed -- those must be reported as
+# NOT CONFIRMED rather than passing.
 sparse = {"applicationId": "app-1", "appName": "x"}
-check("fields this Dokploy does not report are skipped, not failed",
-      run(sparse) == [], run(sparse))
+problems = run(sparse)
+check("critical fields absent from the response are reported, not passed",
+      len(problems) == 4 and all("NOT CONFIRMED" in p for p in problems),
+      problems)
+for field in ("buildType", "command", "args", "networkSwarm"):
+    check(f"{field} absent is reported as NOT CONFIRMED",
+          any(p.startswith(field) and "NOT CONFIRMED" in p for p in problems),
+          problems)
+check("non-critical absent fields stay silent",
+      not any(p.startswith(("dockerfile:", "branch:", "repository:",
+                            "sourceType:", "env:")) for p in problems),
+      problems)
+check("the unconfirmed-args message points at the bind fallback",
+      any("--entrypoint-mode bind" in p for p in problems), problems)
 check("unreadable application is reported",
       run(prov.DokployError("boom"))[0].startswith("could not read"),
       run(prov.DokployError("boom")))

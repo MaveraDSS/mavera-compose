@@ -611,8 +611,13 @@ From a checkout of this repo, with a `.env` whose required variables are filled 
 python scripts/dokploy/generate-manifest.py
 ```
 
-Expect `29 application services`, `170 keys each`, and the 12 infrastructure services listed as left to
-`docker-compose.infra.yml`. This reads `docker compose config`, so anything it reports is exactly what
+Expect `29 application services`, `170 placeholders + 167 case aliases`, and the 12 infrastructure
+services listed as left to `docker-compose.infra.yml`.
+
+The case aliases are not cosmetic. The service repos disagree on placeholder capitalisation — some
+templates say `$log_Level`, others `$Log_Level` — and `envsubst` matches names exactly on Linux, so a
+single spelling leaves the other repos with silently empty values. Both spellings are emitted, carrying
+the same value. See README *The repos disagree on placeholder capitalisation*. This reads `docker compose config`, so anything it reports is exactly what
 the Compose file says — no second copy of the placeholder list to keep in sync.
 
 `build/dokploy/env/*.env` now holds **resolved secrets**. It is gitignored; keep it that way.
@@ -727,6 +732,45 @@ python scripts/dokploy/provision.py --verify-only --role preview --only mavera-a
 
 The preview-role check is worth running on its own: it is what catches a preview host that has
 inherited production network aliases, without needing a live preview to observe the DNS collision.
+
+Note the verifier distinguishes *wrong* from *unconfirmable*. For `buildType`, `command`, `args` and
+`networkSwarm` — the four the design rests on — a field the API does not return is reported as
+`NOT CONFIRMED` rather than passing silently. Reporting success because a field was absent is how a
+broken Application reaches a deploy.
+
+### When the entrypoint does not run
+
+The symptom is the app reading literal `$Placeholder` values. The two-line check, in the container
+(Dokploy's terminal, or `docker exec` on the task):
+
+```sh
+# 1. did the entrypoint run at all?
+#    Expect: [entrypoint] appsettings.json rendered; starting <APP_DLL>
+#    Nothing at all means the image's own ENTRYPOINT ran instead.
+
+# 2. is the environment actually there?
+env | grep -c '^[A-Za-z_]*='          # expect ~170, not a handful
+echo "$APP_DLL"                        # expect e.g. Mavera-Audit.dll
+grep -c '\$[A-Za-z_]' /app/appsettings.json   # expect 0 after rendering
+```
+
+If the entrypoint never ran, the `command`/`args` did not reach the container. Switch to the
+bind-mount mode, which uses a single-string command and no args array:
+
+```bash
+# on the Docker host
+sudo install -d -m 755 /srv/mavera
+sudo tee /srv/mavera/entrypoint.sh < config/entrypoint.sh
+sudo chmod 644 /srv/mavera/entrypoint.sh
+file /srv/mavera/entrypoint.sh        # must say "POSIX shell script", NOT "directory"
+
+# then re-provision that service
+python scripts/dokploy/provision.py --entrypoint-mode bind \
+  --only <service> --update-only --apply
+```
+
+Redeploy afterwards — `command` is applied when the Swarm service is created or updated, so the change
+does not take effect until the next deploy.
 
 Then deploy from the UI in this order, so each group comes up against something that already answers:
 
@@ -920,7 +964,8 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | `failed to calculate checksum of ref ...: "/<Project>/<Project>.csproj": not found` | The build context is wrong. Dokploy falls back to *the Dockerfile's own directory* when `dockerContextPath` is empty, but every `dockerfile/Dockerfile` here copies paths relative to the **repo root**. `provision.py` sets `dockerContextPath: "."`; check it with `--verify-only`. |
 | Build installs the wrong .NET major (e.g. 6.0 for a net8.0 project), or ignores `dockerfile/Dockerfile` | The Application is still on Dokploy's default `buildType` of `nixpacks`, which auto-detects the language and picks its own SDK. Almost always means `saveBuildType` failed earlier in the run. Check with `provision.py --list` (it prints `buildType=`) or `--verify-only`, then re-run with `--apply`. |
 | A run failed part-way through one service | Re-run it. `provision.py` matches existing applications by name and updates in place. Confirm first with `--list` that the half-made application is listed; then re-run, optionally with `--update-only` so it can only update, never create. |
-| App starts but reads literal `$Placeholder` values | The Run Command did not take effect, so `envsubst` never ran. Check Advanced → Run Command: it should be `/bin/sh` with the script as the first argument (inline mode), or `/bin/sh /entrypoint.sh` (bind mode). |
+| App starts but reads literal `$Placeholder` values, e.g. `Configuration value '$log_Level' is not supported` | **The entrypoint did not run.** This is diagnostic, not ambiguous: `envsubst` replaces an *unset* variable with the empty string, so a surviving literal `$name` can only mean the file was never rendered. Check Advanced → Run Command, and see *When the entrypoint does not run* below. |
+| A placeholder renders to an empty value rather than a literal | `envsubst` ran, but no environment variable matched that placeholder. **Names are case-sensitive on Linux**, and the repos disagree on capitalisation, which is why `generate-manifest.py` emits both spellings of every placeholder. If a value is still empty, the template uses a spelling neither variant covers — compare it against `build/dokploy/env/<service>.env` and add it to `x-placeholders`. |
 | `/entrypoint.sh: not found`, or it is a directory | `--entrypoint-mode bind` only: the bind-mount source is missing on the node the task landed on, so Docker created it as a directory. See Phase 8a. The default inline mode cannot hit this. |
 | A service resolves to two addresses | A preview is claiming a production alias. The preview-host Application must have **no** `Aliases` in its Swarm network setting. See README *Why two Applications per repo*. |
 | 502/503 from the gateway for one service | That Application lost its alias, or was provisioned without one. Re-run `provision.py --only <svc> --apply`. |

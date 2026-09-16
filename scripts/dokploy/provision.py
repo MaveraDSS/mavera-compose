@@ -702,9 +702,24 @@ def verify(
 
     problems = []
 
-    def expect(field, wanted, why=""):
+    def expect(field, wanted, why="", critical=False):
+        """Compare one field. `critical` means "unconfirmable is also a problem".
+
+        A field the API does not return cannot be checked. For most fields that
+        is tolerable. For the few the whole design rests on it is not: reporting
+        success because a field was absent is how a broken Application gets
+        deployed. The entrypoint command is the canonical case -- if it does not
+        land, the image's own ENTRYPOINT runs, appsettings.json is never
+        rendered, and the app reads literal $Placeholder values.
+        """
         if field not in app:
-            return  # this Dokploy does not report it; nothing to check
+            if critical:
+                problems.append(
+                    f"{field}: NOT CONFIRMED - application.one did not return "
+                    f"this field, so it cannot be checked"
+                    + (f". {why}" if why else "")
+                )
+            return
         actual = app.get(field)
         if actual != wanted:
             suffix = f" - {why}" if why else ""
@@ -713,7 +728,8 @@ def verify(
             )
 
     expect("buildType", "dockerfile",
-           "nixpacks ignores dockerfile/Dockerfile and picks its own SDK version")
+           "nixpacks ignores dockerfile/Dockerfile and picks its own SDK version",
+           critical=True)
     expect("dockerfile", spec["dockerfile"])
     expect("dockerContextPath", DOCKER_CONTEXT_PATH,
            "an empty context builds from the Dockerfile's own directory, where "
@@ -724,16 +740,32 @@ def verify(
     expect("isPreviewDeploymentsActive", is_preview)
 
     command, args = entrypoint_spec(entrypoint_mode)
-    expect("command", command, "without this the image ENTRYPOINT runs and "
-                               "appsettings.json is never rendered")
-    if entrypoint_mode == "inline" and "args" in app:
-        actual = app.get("args") or []
-        if list(actual) != args:
+    expect("command", command,
+           "without this the image ENTRYPOINT runs, appsettings.json is never "
+           "rendered, and the app reads literal $Placeholder values",
+           critical=True)
+    if entrypoint_mode == "inline":
+        if "args" not in app:
             problems.append(
-                f"args: expected the entrypoint script ({len(args)} elements), "
-                f"got {len(actual)} element(s)"
+                "args: NOT CONFIRMED - application.one did not return this "
+                "field. The inline entrypoint depends on it; use "
+                "--entrypoint-mode bind if it turns out not to be stored."
             )
+        else:
+            actual = app.get("args") or []
+            if list(actual) != args:
+                problems.append(
+                    f"args: expected the entrypoint script ({len(args)} "
+                    f"elements), got {len(actual)} element(s) - the inline "
+                    "entrypoint will not run; try --entrypoint-mode bind"
+                )
 
+    if "networkSwarm" not in app:
+        problems.append(
+            "networkSwarm: NOT CONFIRMED - application.one did not return this "
+            "field, so the DNS aliases all service discovery depends on cannot "
+            "be checked"
+        )
     if "networkSwarm" in app:
         aliases = []
         for entry in (app.get("networkSwarm") or []):

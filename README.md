@@ -117,6 +117,11 @@ works*) is carried by Dokploy's Run Command, which despite the docs describing i
 maps to `ContainerSpec.Command` — a real ENTRYPOINT override. `command` and `args` are both inherited
 by previews, and there is no `previewCommand`, so one setting covers both.
 
+The two modes exist because only one of them is a conventional Dokploy code path. If the app starts
+and reads literal `$Placeholder` values, the entrypoint did not run — that symptom is unambiguous,
+because `envsubst` turns an *unset* variable into an empty string and never leaves a literal `$name`.
+Switch to `bind` and redeploy. See DEPLOY.md *When the entrypoint does not run*.
+
 **Default (`--entrypoint-mode inline`): the script is sent as the container's arguments.**
 
 ```
@@ -139,6 +144,35 @@ an explicit host path and resolve identically for both.
 
 In bind mode the file stays `644` — Dokploy never marks mounted files executable, which is why it is
 run *through* `/bin/sh` rather than executed.
+
+### The repos disagree on placeholder capitalisation
+
+`envsubst` matches environment variable names exactly, and Linux environment variables are
+case-sensitive. **The 29 `appsettings.json` templates are not consistent with each other**: some spell
+a placeholder `$log_Level` and others `$Log_Level`. `x-placeholders` can only define one spelling, so
+whichever it picks, the other set of repos renders that value as an **empty string** — silently, with no
+error and no unrendered-placeholder warning.
+
+This is invisible during local development on Windows, where environment lookups are case-insensitive.
+
+The placeholder names live in the service repos and cannot be fixed from here, so
+`generate-manifest.py` emits **both spellings**: for every placeholder it adds a first-letter
+case variant carrying the same value (167 aliases alongside 170 placeholders, so ~337 keys per service).
+An alias never overwrites a name `x-placeholders` defines in its own right, and the three conventional
+`ALL_CAPS` variables (`APP_DLL`, `ASPNETCORE_ENVIRONMENT`, `ASPNETCORE_HTTP_PORTS`) are left alone.
+`--no-case-aliases` turns it off.
+
+> **This does not fix `docker-compose.yml`.** The local all-in-one stack feeds `x-placeholders`
+> straight into the containers, so locally a repo whose template disagrees with the spelling in
+> `x-placeholders` still gets an empty value. It matters much less there — but if a value is
+> mysteriously blank locally and fine on Dokploy, this is why.
+
+When a value arrives empty, or a placeholder survives as a literal, check inside the container:
+
+```sh
+# should be empty: anything left here was never substituted at all
+grep -oE '"\$[A-Za-z_][A-Za-z0-9_]*"' /app/appsettings.json | sort -u
+```
 
 ### Provisioning
 
@@ -907,6 +941,7 @@ COMPOSE_PROFILES=platform docker compose up -d && docker compose ps
 | `scripts/dokploy/test_provision.py` | Offline checks for project/environment resolution and the existing-application lookup |
 | `scripts/dokploy/test_schema.py` | Offline checks for the OpenAPI-driven required-field handling. `--spec <file>` checks against a spec dumped from your own instance |
 | `scripts/dokploy/test_verify.py` | Offline checks for the read-back verifier, including the nixpacks and preview-alias-hijack regressions |
+| `scripts/dokploy/test_aliases.py` | Offline checks for the placeholder case-alias generation |
 | `build/dokploy/` | Generated, gitignored. The env blocks hold real secrets |
 
 ### Local

@@ -42,6 +42,38 @@ BUILD_CONTEXT_RE = re.compile(
 # wget -q --spider http://localhost/<path> || exit 1
 HEALTHCHECK_RE = re.compile(r"http://localhost/(?P<path>[^\s|]*)")
 
+# Conventional environment variables, not appsettings placeholders. No template
+# references these with a different capitalisation, so they get no alias.
+CONVENTIONAL_ENV_RE = re.compile(r"[A-Z0-9_]+$")
+
+
+def case_aliases(env: dict) -> dict:
+    """First-letter case variants of every placeholder.
+
+    The 29 appsettings.json templates are not consistent with each other: some
+    spell a placeholder `$log_Level` and others `$Log_Level`. envsubst matches
+    names exactly and Linux environment variables are case-sensitive, so a
+    single spelling satisfies only some of the repos -- the rest render to the
+    empty string, silently. (On Windows the mismatch is invisible, because
+    environment lookups there are case-insensitive.)
+
+    Since the placeholder names live in the service repos and cannot be fixed
+    from here, supply both spellings. An alias never overwrites a name that
+    x-placeholders defines in its own right.
+    """
+    aliases = {}
+    for key, value in env.items():
+        if CONVENTIONAL_ENV_RE.fullmatch(key):
+            continue
+        first = key[0]
+        if not first.isalpha():
+            continue
+        other = (first.lower() if first.isupper() else first.upper()) + key[1:]
+        if other in env or other in aliases:
+            continue
+        aliases[other] = value
+    return aliases
+
 
 def compose_config(env_file: str) -> dict:
     """Fully resolved compose config, all profiles included."""
@@ -105,6 +137,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--out", default="build/dokploy")
+    parser.add_argument(
+        "--no-case-aliases",
+        action="store_true",
+        help="do not emit first-letter case variants of the placeholders. The "
+        "service repos disagree on capitalisation ($log_Level vs $Log_Level), "
+        "so without these some values render empty on Linux.",
+    )
     args = parser.parse_args()
 
     config = compose_config(args.env_file)
@@ -115,6 +154,7 @@ def main() -> None:
     env_dir.mkdir(parents=True, exist_ok=True)
 
     apps = []
+    alias_counts: list[int] = []
     for name in sorted(services):
         service = services[name]
         env = service.get("environment") or {}
@@ -125,7 +165,13 @@ def main() -> None:
 
         apps.append(describe(name, service, env))
 
-        lines = [f"{key}={env[key]}" for key in sorted(env)]
+        written = dict(env)
+        if not args.no_case_aliases:
+            aliases = case_aliases(env)
+            alias_counts.append(len(aliases))
+            written.update(aliases)
+
+        lines = [f"{key}={written[key]}" for key in sorted(written)]
         (env_dir / f"{name}.env").write_text(
             "\n".join(lines) + "\n", encoding="utf-8", newline="\n"
         )
@@ -144,7 +190,12 @@ def main() -> None:
     infra = sorted(set(services) - {a["name"] for a in apps})
     key_count = len(services[apps[0]["name"]]["environment"])
     print(f"{len(apps)} application services -> {out_dir / 'manifest.json'}")
-    print(f"{len(apps)} env blocks ({key_count} keys each) -> {env_dir}")
+    if alias_counts:
+        print(f"{len(apps)} env blocks ({key_count} placeholders + "
+              f"{alias_counts[0]} case aliases) -> {env_dir}")
+    else:
+        print(f"{len(apps)} env blocks ({key_count} keys each, no case "
+              f"aliases) -> {env_dir}")
     print(f"{len(infra)} infrastructure services left to docker-compose.infra.yml: {', '.join(infra)}")
     missing = [a["name"] for a in apps if not a["healthPath"]]
     if missing:
