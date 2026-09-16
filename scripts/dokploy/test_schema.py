@@ -144,6 +144,73 @@ if args.spec:
             check(f"spec has {path}", False, "endpoint or schema missing")
         else:
             check(f"spec has {path}", True, f"{len(req)} required field(s)")
+
+    # --- outgoing payloads must satisfy the schema, and bad ones must be
+    # --- rejected BEFORE the HTTP call rather than as an opaque 400.
+    validator = prov.Dokploy("https://x.invalid", "k", True)
+    validator.spec = real
+
+    def accepts(path, payload):
+        try:
+            validator.validate(path, payload)
+            return True, ""
+        except SystemExit as e:
+            return False, str(e).replace("\n", " | ")[:100]
+
+    REAL_PAYLOADS = {
+        "/application.saveBuildType": {
+            "applicationId": "x",
+            "buildType": "dockerfile",
+            "dockerfile": "dockerfile/Dockerfile",
+            "dockerContextPath": prov.DOCKER_CONTEXT_PATH,
+            "dockerBuildStage": "",
+            "herokuVersion": prov.HEROKU_VERSION_DEFAULT,
+            "railpackVersion": prov.RAILPACK_VERSION_DEFAULT,
+        },
+        "/application.saveGithubProvider": {
+            "applicationId": "x", "owner": "MaveraDSS", "repository": "r",
+            "branch": "develop", "buildPath": "/", "githubId": "g",
+            "watchPaths": [], "enableSubmodules": False, "triggerType": "push",
+        },
+        "/application.saveEnvironment": {
+            "applicationId": "x", "env": "A=1", "buildArgs": "",
+            "buildSecrets": "", "createEnvFile": False,
+        },
+        "/mounts.create": {
+            "type": "bind", "hostPath": "/srv/mavera/entrypoint.sh",
+            "mountPath": "/entrypoint.sh", "serviceType": "application",
+            "serviceId": "x",
+        },
+        "/domain.create": {
+            "host": "h", "path": "/", "port": 80, "https": True,
+            "applicationId": "x", "domainType": "application",
+            "certificateType": "letsencrypt",
+        },
+    }
+    for path, payload in REAL_PAYLOADS.items():
+        ok, why = accepts(path, payload)
+        check(f"payload we send is valid: {path}", ok, why)
+
+    REJECTS = [
+        ("bad enum value", "/application.saveBuildType",
+         {"applicationId": "x", "buildType": "docker-file"}),
+        ("field not in schema", "/application.saveBuildType",
+         {"applicationId": "x", "notAField": 1}),
+        ("wrong type", "/domain.create", {"host": "h", "port": "80"}),
+        ("null where the schema forbids it", "/application.saveBuildType",
+         {"applicationId": None}),
+    ]
+    for label, path, payload in REJECTS:
+        ok, _ = accepts(path, payload)
+        check(f"rejected before sending: {label}", not ok)
+
+    ok, why = accepts("/application.saveBuildType", {"dockerfile": None})
+    check("null where the schema allows it is accepted", ok, why)
+
+    # The context path is the whole point of one of these regressions.
+    check("build context is the repo root, not empty",
+          prov.DOCKER_CONTEXT_PATH == ".", prov.DOCKER_CONTEXT_PATH)
+
     build = client.required_fields("/application.saveBuildType")
     for field in ("herokuVersion", "railpackVersion"):
         if field in build:

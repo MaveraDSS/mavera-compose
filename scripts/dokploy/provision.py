@@ -73,6 +73,10 @@ NEWLINE = "\n"
 # /etc/dokploy: that is Dokploy's own data root (host bind mount, 1:1 into the
 # container) and it prunes paths inside it -- removeDirectoryCode rm -rf's
 # /etc/dokploy/applications/<appName> when an app or preview is torn down.
+# Build context for every service: the repo root, because each
+# dockerfile/Dockerfile does `COPY <Project>/<Project>.csproj .` relative to it.
+DOCKER_CONTEXT_PATH = "."
+
 # Defaults of the matching Dokploy columns (db/schema/application.ts). Only
 # relevant to buildpack builders; we send them because saveBuildType requires
 # the keys.
@@ -160,6 +164,58 @@ class Dokploy:
         props = schema.get("properties") or {}
         return {f: props.get(f, {}) for f in (schema.get("required") or [])}
 
+    def field_schemas(self, path: str) -> dict:
+        if not self.spec:
+            return {}
+        node = (self.spec.get("paths") or {}).get(path) or {}
+        return (
+            node.get("post", {})
+            .get("requestBody", {})
+            .get("content", {})
+            .get("application/json", {})
+            .get("schema", {})
+            .get("properties")
+            or {}
+        )
+
+    def validate(self, path: str, payload: dict) -> None:
+        """Check the payload against the spec before sending it.
+
+        An enum or type mismatch comes back as an opaque 400 with a zodError
+        buried in it, potentially half-way through a 29-service run. Reading the
+        schema first turns that into a precise message before anything is sent.
+        """
+        props = self.field_schemas(path)
+        if not props:
+            return
+        problems = []
+        for key, value in payload.items():
+            schema = props.get(key)
+            if schema is None:
+                problems.append(f"{key}: not in this endpoint's schema")
+                continue
+            variants = schema.get("anyOf") or schema.get("oneOf") or [schema]
+            enums = [e for v in variants for e in (v.get("enum") or [])]
+            if enums and value not in enums:
+                problems.append(f"{key}={value!r} is not one of {enums}")
+                continue
+            if value is None:
+                if not any(v.get("type") == "null" for v in variants):
+                    problems.append(f"{key}: null, but the schema does not allow it")
+                continue
+            types = {v.get("type") for v in variants if v.get("type")}
+            if types and not _type_ok(value, types):
+                problems.append(
+                    f"{key}: sending {type(value).__name__}, schema wants {sorted(types)}"
+                )
+        if problems:
+            sys.exit(
+                f"payload for {path} does not match this Dokploy's schema:\n  "
+                + "\n  ".join(problems)
+                + "\n\nNothing was sent. This usually means Dokploy changed the "
+                "endpoint; update provision.py."
+            )
+
     def post(self, path: str, payload: dict) -> Any:
         """Write call. Printed and skipped unless --apply was passed."""
         for field, schema in self.required_fields(path).items():
@@ -168,6 +224,7 @@ class Dokploy:
             payload[field] = schema_default(schema)
             print(f"      (auto-filled {field}={payload[field]!r}: required by "
                   f"this Dokploy, not set by us)")
+        self.validate(path, payload)
         if self.dry_run:
             redacted = redact(payload)
             print(f"    POST {path}")
@@ -175,6 +232,21 @@ class Dokploy:
                 print(f"      {key}: {value}")
             return {"dryRun": True}
         return self._request("POST", path, payload)
+
+
+def _type_ok(value: Any, types: set) -> bool:
+    """JSON-schema type check. bool before int, since bool is an int in Python."""
+    if isinstance(value, bool):
+        return "boolean" in types
+    if isinstance(value, str):
+        return "string" in types
+    if isinstance(value, int) or isinstance(value, float):
+        return bool(types & {"number", "integer"})
+    if isinstance(value, list):
+        return "array" in types
+    if isinstance(value, dict):
+        return "object" in types
+    return True
 
 
 def schema_default(schema: dict) -> Any:
@@ -506,7 +578,14 @@ def provision(
             "applicationId": application_id,
             "buildType": "dockerfile",
             "dockerfile": spec["dockerfile"],
-            "dockerContextPath": "",
+            # MUST be "." (the repo root), not "". Dokploy does
+            #     getDockerContextPath(app) || <the Dockerfile's own directory>
+            # and treats "" as unset, so an empty value silently builds with
+            # dockerfile/ as the context -- where the .csproj files are not.
+            # This mirrors compose's `context: <repo root>` +
+            # `dockerfile: dockerfile/Dockerfile`, which is the combination the
+            # 29 Dockerfiles are written against.
+            "dockerContextPath": DOCKER_CONTEXT_PATH,
             "dockerBuildStage": "",
             # Required by the endpoint even for buildType=dockerfile, where
             # neither is used. Omitting them fails with "expected nonoptional,
@@ -636,6 +715,9 @@ def verify(
     expect("buildType", "dockerfile",
            "nixpacks ignores dockerfile/Dockerfile and picks its own SDK version")
     expect("dockerfile", spec["dockerfile"])
+    expect("dockerContextPath", DOCKER_CONTEXT_PATH,
+           "an empty context builds from the Dockerfile's own directory, where "
+           "the .csproj files are not")
     expect("repository", spec["repository"])
     expect("branch", spec["branch"])
     expect("sourceType", "github", "previews only run for github sources")

@@ -38,6 +38,7 @@ GOOD = {
     "appName": "mavera-audit-bwqwzr",
     "buildType": "dockerfile",
     "dockerfile": "dockerfile/Dockerfile",
+    "dockerContextPath": ".",
     "repository": "mavera-audit",
     "branch": "develop",
     "sourceType": "github",
@@ -90,6 +91,11 @@ check("the nixpacks message explains the consequence",
 # --- each other field independently ------------------------------------------
 cases = [
     ("wrong dockerfile path", dict(GOOD, dockerfile="Dockerfile"), "dockerfile"),
+    # The build context regression: "" makes Dokploy fall back to the
+    # Dockerfile's own directory, and COPY <Project>/<Project>.csproj fails.
+    ("empty build context", dict(GOOD, dockerContextPath=""), "dockerContextPath"),
+    ("build context set to the dockerfile dir",
+     dict(GOOD, dockerContextPath="dockerfile"), "dockerContextPath"),
     ("wrong branch", dict(GOOD, branch="main"), "branch"),
     ("wrong repository", dict(GOOD, repository="other"), "repository"),
     ("non-github source", dict(GOOD, sourceType="docker"), "sourceType"),
