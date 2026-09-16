@@ -1,0 +1,16 @@
+{
+  "name": "mavera",
+  "owner": {
+    "name": "Mavera DSS"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for Mavera DSS development"
+  },
+  "plugins": [
+    {
+      "name": "dss",
+      "source": "./plugins/dss",
+      "description": "Work a DSS ticket on the local devenv stack: /dss:dev-env, /dss:verify, /dss:ticket"
+    }
+  ]
+}
