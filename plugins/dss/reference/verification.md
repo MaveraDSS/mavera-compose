@@ -46,6 +46,13 @@ The `chrome-devtools` MCP server drives the developer's Chrome. Pattern:
    are a known dev02 issue, note them and move on). `take_screenshot` at the state the ticket describes.
 5. Correlate with `devenv logs <service> --tail 200` for a local service.
 
+Known behaviour, learned on the first trial (2026-09-16): opening a document from the case page opens a
+**new tab** (`/document-page/multi-page?...`), so run `list_pages` and address the new page id afterwards. The
+PDFTron viewer logs one `Uncaught (in promise)` from `TabManager.js` (`_writeToDB`, its IndexedDB tab
+persistence) on every document open; third-party noise, note it and move on. A 404 for
+`/expertise/<area>.svg` is a missing icon for a test expertise area, not an API failure. Requests to
+`/Vera/<Service>/**` for a `--local` service show up in that service's log as `Request finished ... localhost:5151/...`.
+
 ## Evidence
 
 Folder: `<DEVENV>/.state/evidence/<TICKET>/` (gitignored). Contents:
