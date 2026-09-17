@@ -14,8 +14,9 @@ Read `${CLAUDE_PLUGIN_ROOT}/reference/devenv.md` and `${CLAUDE_PLUGIN_ROOT}/refe
 
 ## 1. What to verify
 
-- With a ticket key: fetch it (Atlassian MCP, fields `summary`, `customfield_10064`) and take the checks from
-  "How can it be tested?" and the DoD. Turn each into one concrete check: request + expected status/fields, or a
+- With a ticket key: fetch it (Atlassian MCP, fields `summary`, `customfield_10064`, `comment`, `issuelinks`) and
+  take the checks from "How can it be tested?" and the DoD; the comments and the linked predecessor ticket often
+  hold the concrete test steps and data (`reference/context.md`, sections 1 and 2). Turn each into one concrete check: request + expected status/fields, or a
   browser flow + expected screen state.
 - Without a key, or when the ticket has no test description: ask the developer for the flow to check in one
   sentence and derive the checks from that.

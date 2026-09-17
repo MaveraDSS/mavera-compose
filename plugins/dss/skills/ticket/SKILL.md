@@ -10,14 +10,18 @@ arguments: [ticket]
 Goal: the developer hands over a ticket and reviews a finished change with evidence. You stop for a yes at two
 points: the service proposal and the change plan. You never push, open a PR or comment on Jira unless asked.
 
-Read `${CLAUDE_PLUGIN_ROOT}/reference/devenv.md`, `${CLAUDE_PLUGIN_ROOT}/reference/repos.md` and
-`${CLAUDE_PLUGIN_ROOT}/reference/verification.md` first.
+Read `${CLAUDE_PLUGIN_ROOT}/reference/context.md`, `${CLAUDE_PLUGIN_ROOT}/reference/devenv.md`,
+`${CLAUDE_PLUGIN_ROOT}/reference/repos.md` and `${CLAUDE_PLUGIN_ROOT}/reference/verification.md` first.
 
 ## 1. Understand
 
-Fetch the ticket (Atlassian MCP: `summary`, `description`, `customfield_10064`, `issuelinks`, `parent`, `status`).
-Restate in three lines: what is wrong or wanted, the definition of done, how it will be tested. Anything
-ambiguous that changes the work: ask now, once, with concrete options.
+Gather the context per `reference/context.md`: the ticket with its spec and comments; the parent, sibling
+sub-tasks, linked issues and every ticket key mentioned in the text; existing branches, commits and pull
+requests carrying this key or a predecessor's key in every candidate repo. Write the context block (what is
+asked, DoD, siblings and dependencies, predecessors and where their code landed, existing work to continue,
+decisions from comments). Then restate in three lines: what is wrong or wanted, the definition of done, how it
+will be tested. Anything ambiguous that changes the work: ask now, once, with concrete options. An existing
+branch for the ticket is continued, not replaced, unless the developer says otherwise.
 
 ## 2. Environment
 

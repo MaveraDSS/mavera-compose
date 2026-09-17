@@ -18,12 +18,14 @@ Read `${CLAUDE_PLUGIN_ROOT}/reference/devenv.md` first (how to find and run deve
 - `--local a,b`: skip inference; go to step 4 with that list. `--no-infra` alone means frontend + libertine only.
 - Nothing: ask for a ticket key.
 
-## 2. Fetch the ticket
+## 2. Fetch the ticket and its context
 
-Use the Atlassian MCP (`getJiraIssue`, cloud `mavera-dss.atlassian.net`) with fields `summary`, `description`,
-`customfield_10064` (the DSS spec: task description, DoD, how to test), `issuelinks`, `status`, `parent`. If the
-MCP is not available, say so with the fix (connect the Atlassian connector in Claude Code, then retry) and stop.
-If the key does not exist, stop with the message.
+Follow `${CLAUDE_PLUGIN_ROOT}/reference/context.md`: the ticket (summary, description, spec
+`customfield_10064`, status, parent, sub-tasks, issue links, comments), the related tickets (parent, siblings,
+linked issues, keys mentioned in the text) and the previous work in the repos (branches and commits carrying the
+key or a predecessor's key, pull requests). Cloud `mavera-dss.atlassian.net`. If the Atlassian MCP is not
+available, say so with the fix (connect the Atlassian connector in Claude Code, then retry) and stop. If the key
+does not exist, stop with the message. Summarise the context in a few lines before proposing.
 
 ## 3. Infer the services
 
@@ -32,7 +34,8 @@ Apply, in this order of weight, and keep a one-line reason per hit:
 1. Paths and names in the spec: `/Vera/<Service>/...`, controller or class names (`rg` across the repos root),
    libertine routes (`mavera-libertine/LibertineWeb/appsettings.json`). See `feature-areas.md`, section
    "Signals stronger than words".
-2. Summary prefixes `[FE]`, `[BE]`, `[INFRA]` and linked pull requests or branches.
+2. Summary prefixes `[FE]`, `[BE]`, `[INFRA]`, existing branches or commits for the key, linked pull requests,
+   and the repos where the predecessor tickets landed.
 3. The word table in `${CLAUDE_SKILL_DIR}/feature-areas.md`.
 
 Only services with a `project` in `<DEVENV>/manifest.json` can run locally (today: evaluation-service,
