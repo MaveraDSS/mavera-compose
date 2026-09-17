@@ -785,6 +785,61 @@ def verify(
     return problems
 
 
+# Fields worth seeing when an Application does not behave as provisioned.
+INSPECT_FIELDS = [
+    "applicationId", "appName", "name", "sourceType", "repository", "owner",
+    "branch", "buildType", "dockerfile", "dockerContextPath", "dockerBuildStage",
+    "buildPath", "command", "args", "networkSwarm", "networkIds",
+    "detachDokployNetwork", "autoDeploy", "isPreviewDeploymentsActive",
+    "previewLimit", "previewPort", "applicationStatus",
+]
+
+
+def inspect(client: Dokploy, application_id: str, name: str) -> None:
+    """Print what the API actually returns for an Application.
+
+    Exists because "the field came back null" and "the API does not return that
+    field" look identical through the verifier, and they need opposite fixes:
+    one means the write did not stick, the other means the state may be fine and
+    the running container simply predates it.
+    """
+    print(f"\n{name}  (applicationId={application_id})")
+    try:
+        app = client.get(f"/application.one?applicationId={application_id}")
+    except DokployError as error:
+        print(f"    application.one failed: {error}")
+        return
+    if not isinstance(app, dict):
+        print(f"    unexpected response type: {type(app).__name__}")
+        return
+
+    for field in INSPECT_FIELDS:
+        if field not in app:
+            print(f"    {field:28} <NOT RETURNED by this Dokploy>")
+            continue
+        value = app[field]
+        if field == "args" and isinstance(value, list):
+            shown = [
+                f"<{len(v.splitlines())}-line script>"
+                if isinstance(v, str) and len(v.splitlines()) > 1 else v
+                for v in value
+            ]
+            print(f"    {field:28} {shown!r}")
+        else:
+            print(f"    {field:28} {value!r}")
+
+    for field in ("env", "previewEnv", "buildArgs", "buildSecrets"):
+        if field in app:
+            value = app[field] or ""
+            print(f"    {field:28} <{len(value.splitlines())} lines>")
+        else:
+            print(f"    {field:28} <NOT RETURNED by this Dokploy>")
+
+    extra = sorted(set(app) - set(INSPECT_FIELDS)
+                   - {"env", "previewEnv", "buildArgs", "buildSecrets"})
+    print(f"    ---- {len(app)} fields returned; others: {', '.join(extra) or 'none'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", default="build/dokploy/manifest.json")
@@ -844,6 +899,13 @@ def main() -> None:
     parser.add_argument(
         "--preview-wildcard",
         help="e.g. '*.preview.example.com'. Omit to use Dokploy's sslip.io default.",
+    )
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="print the raw fields application.one returns for each selected "
+        "service, then exit. Use this when the verifier and the running "
+        "container disagree.",
     )
     parser.add_argument(
         "--verify-only",
@@ -945,6 +1007,17 @@ def main() -> None:
     domains = {
         key: os.environ.get(key) for key in ("GATEWAY_HOST", "IDENTITY_HOST")
     }
+
+    if args.inspect:
+        for spec in specs:
+            name = f"{spec['name']}-pr" if args.role == "preview" else spec["name"]
+            app = existing.get(name)
+            if not app:
+                print(f"\n{name}  NOT PROVISIONED in this environment")
+                continue
+            inspect(client, app["applicationId"], name)
+        print()
+        return
 
     if args.verify_only:
         problem_count = 0
