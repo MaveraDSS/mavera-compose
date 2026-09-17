@@ -828,12 +828,46 @@ def inspect(client: Dokploy, application_id: str, name: str) -> None:
         else:
             print(f"    {field:28} {value!r}")
 
+    # Key names only -- never values. buildArgs in particular matters: build
+    # args are recorded in image history, so anything secret landing there is
+    # baked into the image for anyone who can pull it.
     for field in ("env", "previewEnv", "buildArgs", "buildSecrets"):
-        if field in app:
-            value = app[field] or ""
-            print(f"    {field:28} <{len(value.splitlines())} lines>")
-        else:
+        if field not in app:
             print(f"    {field:28} <NOT RETURNED by this Dokploy>")
+            continue
+        value = app[field] or ""
+        lines = [ln for ln in value.splitlines() if ln.strip()]
+        keys = [ln.split("=", 1)[0].strip() for ln in lines if "=" in ln]
+        other = [ln for ln in lines if "=" not in ln]
+        print(f"    {field:28} <{len(lines)} lines, {len(keys)} key=value>")
+        if keys:
+            head = ", ".join(keys[:6])
+            tail = ", ".join(keys[-3:]) if len(keys) > 9 else ""
+            print(f"        keys: {head}"
+                  + (f" ... {tail}" if tail else ""))
+        if other:
+            print(f"        {len(other)} line(s) with no '=': "
+                  f"{other[:3]!r}")
+
+    # buildArgs/buildSecrets should be empty for these services. If they carry
+    # the environment, say so loudly rather than leaving it in a line count.
+    env_keys = set()
+    if isinstance(app.get("env"), str):
+        env_keys = {ln.split("=", 1)[0].strip()
+                    for ln in app["env"].splitlines() if "=" in ln}
+    for field in ("buildArgs", "buildSecrets"):
+        raw = app.get(field)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        keys = {ln.split("=", 1)[0].strip()
+                for ln in raw.splitlines() if "=" in ln}
+        overlap = keys & env_keys
+        print(f"    !! {field} is NOT empty ({len(keys)} keys)"
+              + (f", {len(overlap)} of them also in env" if overlap else ""))
+        if overlap:
+            print(f"    !! build args are recorded in image history - anything "
+                  f"secret here is baked into the image. Clear it in the UI "
+                  f"(Environment -> Build Args) or re-run provisioning.")
 
     extra = sorted(set(app) - set(INSPECT_FIELDS)
                    - {"env", "previewEnv", "buildArgs", "buildSecrets"})
