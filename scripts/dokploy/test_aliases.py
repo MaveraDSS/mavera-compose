@@ -3,8 +3,12 @@
 The 29 appsettings.json templates disagree on capitalisation -- some spell a
 placeholder $log_Level and others $Log_Level. envsubst matches names exactly and
 Linux environment variables are case-sensitive, so one spelling leaves the other
-set of repos rendering empty values. The names live in the service repos and
-cannot be fixed from here, so both spellings are supplied.
+set of repos rendering empty values.
+
+This is handled at container start by config/entrypoint.sh (covered by
+test_entrypoint.sh), so the generator no longer emits aliases by default. These
+checks cover the --case-aliases path, which remains for the case where the
+entrypoint is bypassed.
 """
 import importlib.util
 import sys
@@ -75,9 +79,9 @@ twice.update(gen.case_aliases(once))
 check("generation is idempotent", once == twice,
       f"{len(once)} vs {len(twice)}")
 
-# --- against the generated output, if it is there ----------------------------
+# --- against the generated output, only when aliases were requested ---------
 sample = REPO_ROOT / "build" / "dokploy" / "env" / "mavera-audit.env"
-if sample.exists():
+if sample.exists() and "log_Level=" in sample.read_text(encoding="utf-8"):
     keys = {}
     for line in sample.read_text(encoding="utf-8").splitlines():
         if "=" in line:
@@ -92,7 +96,8 @@ if sample.exists():
     check("every placeholder has its twin",
           len(dupes) > 100, f"{len(dupes)} pairs")
 else:
-    print("(build/dokploy/env not generated; skipped output checks)\n")
+    print("(no aliased env block on disk; skipped output checks -- regenerate "
+          "with --case-aliases to cover them)\n")
 
 for ok, label, detail in results:
     print(f"{'PASS' if ok else 'FAIL':5} {label:52} {'' if ok else detail}")

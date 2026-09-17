@@ -114,12 +114,42 @@ else
     skip "wrong-case variable does NOT satisfy a placeholder" \
          "environment lookups are case-insensitive here; this is a Linux behaviour"
 fi
-# The UNSET report uses shell parameter expansion, which is case-sensitive even
-# where the environment is not, so this assertion holds on either platform.
-echo "$out" | grep -q 'log_Level'
-report "the case mismatch is named in the UNSET report" $? "$out"
+# The fallback uses shell parameter expansion, which is case-sensitive even
+# where the environment is not, so it engages on either platform.
+echo "$out" | grep -q 'case-matched:.*log_Level<-Log_Level'
+report "the mismatch is resolved from the other spelling, not left unset" $? "$out"
+echo "$out" | grep -q 'UNSET'
+if [ $? -eq 0 ]; then
+    report "a case-matched placeholder is not also reported UNSET" 1 "$out"
+else
+    report "a case-matched placeholder is not also reported UNSET" 0 ""
+fi
 
-# --- 5. hard failures -------------------------------------------------------
+# --- 5. capitalisation is reconciled from the other spelling -----------------
+# The repos disagree: some templates say $log_Level, others $Log_Level, and
+# x-placeholders can only define one. The unset spelling must be satisfied from
+# the other one rather than rendering empty.
+d=$(setup 5b)
+printf '{"a":"$log_Level"}' > "$d/app/appsettings.json"
+out=$(run_testable "$d/app" Log_Level=Information)
+grep -q '"a":"Information"' "$d/app/appsettings.json"
+report "lower-first placeholder satisfied by the upper-first variable" $? "$out"
+echo "$out" | grep -q 'case-matched'
+report "the case match is reported" $? "$out"
+
+d=$(setup 5c)
+printf '{"a":"$Bucket_Region"}' > "$d/app/appsettings.json"
+out=$(run_testable "$d/app" bucket_Region=eu-west-1)
+grep -q '"a":"eu-west-1"' "$d/app/appsettings.json"
+report "upper-first placeholder satisfied by the lower-first variable" $? "$out"
+
+d=$(setup 5d)
+printf '{"a":"$Neither_Spelling"}' > "$d/app/appsettings.json"
+out=$(run_testable "$d/app" Unrelated=x)
+echo "$out" | grep -q 'Neither_Spelling'
+report "a placeholder with neither spelling set is still reported UNSET" $? "$out"
+
+# --- 6. hard failures -------------------------------------------------------
 d=$(setup 5)
 out=$(run_testable "$d/app" Log_Level=x)
 echo "$out" | grep -q 'FATAL'

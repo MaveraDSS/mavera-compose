@@ -1,0 +1,924 @@
+# =============================================================================
+# Mavera DSS - application services (production)
+# =============================================================================
+# Deployed on Dokploy as a Docker Compose service. Pair it with
+# docker-compose.infra.yml, which must be deployed FIRST: this file has no
+# depends_on, so on a cold start these services crash-loop until SQL Server,
+# RabbitMQ, Mongo, MinIO and the collector answer.
+#
+# Why compose rather than 29 Dokploy Applications: Applications are the only
+# service type Dokploy gives preview deployments to, but they need `command`
+# (the envsubst entrypoint) and `networkSwarm` (the DNS aliases) set through
+# `application.update` -- which accepts the call and persists nothing on the
+# Dokploy version here. In compose both are plain YAML that already works. So
+# production runs here, and a Dokploy Application is added per repo that wants
+# PR previews. See README "Topology on Dokploy".
+#
+# Everything is on `dokploy-network` so these services reach the infra stack
+# and each other. Both DNS forms resolve for every service -- the bare name and
+# <name>.svc.cluster.local -- because the appsettings templates use both.
+#
+# TWO DOKPLOY SETTINGS ARE LOAD-BEARING, same as the infra stack:
+#   * Compose Type must be `Docker Compose`, NOT `Stack`.
+#   * Isolated Deployments must stay OFF.
+#
+# Env-file generation must be enabled in Dokploy, or every ${VAR:?} fails at
+# parse time. See DEPLOY.md.
+#
+# The three `extras` services at the bottom are still commented out. Their
+# networks blocks have been updated, but their depends_on lines have not --
+# delete those if you enable one, since the infra services are in another
+# compose project now.
+# =============================================================================
+
+x-placeholders: &placeholders
+  ASPNETCORE_ENVIRONMENT: Production          # matches the k8s overlays; no appsettings.Production.json exists in any repo
+  ASPNETCORE_HTTP_PORTS: "80"
+
+  # --- logging & tracing ---
+  Log_Level: ${LOG_LEVEL:-Information}
+  Log_IncludeScopes: "false"
+  SeriLog_Level: ${LOG_LEVEL:-Information}
+  Tracing_Connection_String: http://otel-collector:4317   # MUST be an absolute URI: ~10 services throw on an invalid one
+  ServiceSettings_ENV: ${ENV_NAME:-dokploy}
+  # Bare host on purpose: the appsettings templates prefix it themselves
+  # (user-service reads "disco": "https://$ServiceSettings_EnvURL").
+  ServiceSettings_EnvURL: ${GATEWAY_HOST:?GATEWAY_HOST is not set}
+  ServiceSettings_ClientUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}
+
+  # --- SQL Server: one server, seven catalogs ---
+  ConnectionStrings_DB_Server: ${DB_SERVER:-sqlserver}
+  ConnectionStrings_DB_User: ${DB_USER:-sa}
+  ConnectionStrings_DB_Pass: ${DB_PASS:?DB_PASS is not set}
+  ConnectionStrings_DB_Name: vera-dev02                  # restored manually; see README
+  ConnectionStrings_DB_InboxOutbox: MaveraInboxOutbox
+  ConnectionStrings_CaregiverContext_DB_Name: vera-caregivers-dev02   # restored manually
+  ConnectionStrings_SchedulerContext_DB_Name: MaveraScheduler
+  ConnectionString_DB_IdentityServer: vera-identity-dev02  # restored manually
+  ConnectionStrings_DB_Storage_Operations: MaveraStorageOperations
+  ConnectionStrings_DB_Ocr_Operations: MaveraOcrOperations
+
+  # --- MongoDB: one server, eleven databases ---
+  ConnectionStrings_DB_Mongo_Server: mongo
+  ConnectionStrings_DB_Mongo_User: ${MONGO_USER:-mavera}
+  ConnectionStrings_DB_Mongo_Pass: ${MONGO_PASS:?MONGO_PASS is not set}
+  ConnectionStrings_DB_Mongo_AuditLoger: audit-logs
+  ConnectionStrings_DB_Mongo_EvaluationService: evaluation-service
+  ConnectionStrings_DB_Mongo_DocumentProcessor: document-processor
+  ConnectionStrings_DB_Mongo_DocumentClassifier: document-classifier
+  ConnectionStrings_DB_Mongo_DocumentSummaries: document-summaries
+  ConnectionStrings_DB_Mongo_DocumentAnonymize: document-anonymize
+  ConnectionStrings_DB_Mongo_RelevanceScore: relevance-score
+  ConnectionStrings_DB_Mongo_JournalEventsClassifier: journalevents-classifier
+  ConnectionStrings_DB_Mongo_IdentityCheck: identity-check
+  ConnectionStrings_DB_Mongo_Fkassan: fkassan
+  ConnectionStrings_DB_Mongo_EnhancedPatientView: enhanced-patient-view
+
+  # --- RabbitMQ (host is hard-coded in the templates; see the alias on the broker) ---
+  MessageBroker_Username: ${RABBITMQ_USER:-mavera}
+  MessageBroker_Password: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
+  MessageBroker_VirtualHost: "/"
+
+  # --- Redis ---
+  RedisInstance: redis
+  RedisPort: "6379"
+  CacheType: ${CACHE_TYPE:-redis}             # redis | inmemory
+
+  # --- Object storage (MinIO, S3-compatible) ---
+  BucketProviderUrl: http://minio:9000
+  BucketProviderKey: ${MINIO_USER:-mavera}
+  BucketProviderSecret: ${MINIO_PASS:?MINIO_PASS is not set}
+  BucketName: ${BUCKET_ASSETS:-mavera-assets}
+  Bucket_DocumentsBucketName: ${BUCKET_DOCUMENTS:-mavera-documents}
+  Bucket_Region: ${BUCKET_REGION:-us-east-1}
+  Bucket_CaseDocuments_Folder: case-documents
+  Bucket_UserProfilePictures_Folder: user-profile-pictures
+  Bucket_UserDocuments_Folder: user-documents
+  Bucket_VeraInsuranceDocuments_Folder: insurance-documents
+  Bucket_LookupTables_Folder: lookup-tables
+  assets_wysiwyg_folder: wysiwyg
+
+  # --- Service discovery: placeholder -> container name ---
+  # The ".svc.cluster.local" suffix in the templates is satisfied by each
+  # service's network alias, so these URLs work verbatim.
+  ServiceSettings_Services_Audit: mavera-audit
+  ServiceSettings_Services_Caregivers: mavera-caregivers
+  ServiceSettings_Services_Client_Relevance_Score: mavera-ai-client-relevance-score
+  ServiceSettings_Services_Dashboard: mavera-dashboard
+  ServiceSettings_Services_DocumentClassifier: mavera-ai-document-classifier
+  ServiceSettings_Services_DocumentManagement: mavera-document-service
+  ServiceSettings_Services_DocumentProcessor: mavera-ai-document-processor
+  ServiceSettings_Services_DocumentSummaries: mavera-ai-document-summaries
+  ServiceSettings_Services_EnhancedPatientView: mavera-enhanced-patient-view
+  ServiceSettings_Services_EvaluationService: mavera-evaluation-service
+  ServiceSettings_Services_FileConversion: mavera-file-conversion-service
+  ServiceSettings_Services_Fkassan: mavera-fkassan-service
+  ServiceSettings_Services_IdentityCheck: mavera-ai-identitycheck-processor
+  ServiceSettings_Services_IdentityClient: mavera-identity-client
+  ServiceSettings_Services_IdentityService: mavera-identity-server
+  ServiceSettings_Services_JournalEventsClassifier: mavera-ai-journalevents-classifier
+  ServiceSettings_Services_Kuralink: mavera-kuralink
+  ServiceSettings_Services_MedicalAdvisorsNetwork: mavera-medical-advisor-network
+  ServiceSettings_Services_NewsManager: mavera-news-manager
+  ServiceSettings_Services_OcrService: mavera-ocr
+  ServiceSettings_Services_PdfGenerator: mavera-pdf-generator-service
+  ServiceSettings_Services_StorageService: mavera-storage-service
+  ServiceSettings_Services_Timeline: mavera-ai-timeline
+  ServiceSettings_Services_UserService: mavera-user-service
+  # Out of scope for these 29 repos — no container exists. Left as a
+  # non-resolving name so the URLs stay syntactically valid.
+  ServiceSettings_Services_Translation: mavera-translation-service
+  ServiceSettings_Services_EventPredict: not-configured
+  # Bare host on purpose: libertine's YARP cluster addresses this one as
+  # http://$VAR/ with no ".svc.cluster.local" suffix. It is a Python GPU
+  # inference service (mavera-ai-idp2-inference), outside these 29 repos.
+  ServiceSettings_Services_Idp2: ${AI_IDP2_HOST:-not-configured}
+
+  # --- IdentityServer ---
+  IdentityServer_ApplicationName: Mavera
+  # These two are advertised in the OIDC discovery document and become the
+  # `iss` claim in every token. TLS terminates at Traefik, so when you put a
+  # real domain behind HTTPS you MUST set PUBLIC_SCHEME=https or clients see
+  # an issuer that does not match the URL they actually reached.
+  IdentityServer_IssuerUri: ${PUBLIC_SCHEME:-http}://${IDENTITY_HOST:?IDENTITY_HOST is not set}
+  IdentityServer_PublicOrigin: ${PUBLIC_SCHEME:-http}://${IDENTITY_HOST:?IDENTITY_HOST is not set}
+  IdentityServer_LoginUrl: /account/login
+  IdentityServer_LogoutUrl: /account/logout
+  IdentityServer_ErrorUrl: /home/error
+  IdentityServer_UnauthorizedUrl: /home/unauthorized
+  IdentityServer_PostLogoutRedirectUri: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}
+  IdentityServer_SecretKey: ${IDENTITY_SECRET_KEY:-}
+  IdentityServer_MembershipHash: ${IDENTITY_MEMBERSHIP_HASH:-}
+  # user-service reads this as a whole URL ("IdentityClient": { "BaseUrl": ... }),
+  # not a host fragment, so it carries the scheme itself.
+  IdentityClient_BaseUrl: http://mavera-identity-client.svc.cluster.local
+
+  # --- Gotenberg (PDF conversion engine used by file-conversion-service) ---
+  GotenbergSharpClient_ServiceUrl: gotenberg:3000
+
+  # --- AI model endpoints: separate Python services, outside these 29 repos ---
+  # Whole-URL placeholders get a syntactically valid but non-resolving URI;
+  # host-fragment placeholders get a bare name.
+  AiModels_DocumentProcessorUrl: ${AI_DOCUMENT_PROCESSOR_URL:-http://not-configured.invalid}
+  AiModels_DocumentProcessorNorwayUrl: ${AI_DOCUMENT_PROCESSOR_URL:-http://not-configured.invalid}
+  AiModels_DocumentProcessorDenmarkUrl: ${AI_DOCUMENT_PROCESSOR_URL:-http://not-configured.invalid}
+  AiModels_DocumentProcessorFinlandUrl: ${AI_DOCUMENT_PROCESSOR_URL:-http://not-configured.invalid}
+  AiModels_DocumentProcessorGermanyUrl: ${AI_DOCUMENT_PROCESSOR_URL:-http://not-configured.invalid}
+  AiModels_DocumentProcessorNetherlandsUrl: ${AI_DOCUMENT_PROCESSOR_URL:-http://not-configured.invalid}
+  AiModels_DocumentProcessorPortugalUrl: ${AI_DOCUMENT_PROCESSOR_URL:-http://not-configured.invalid}
+  AiModels_DocumentProcessorUKUrl: ${AI_DOCUMENT_PROCESSOR_URL:-http://not-configured.invalid}
+  AiModels_DocumentClassificationUrl: ${AI_DOCUMENT_CLASSIFICATION_URL:-http://not-configured.invalid}
+  AiModels_DocumentSummariesUrl: ${AI_SUMMARIES_URL:-http://not-configured.invalid}
+  AiModels_FkassanUrl: ${AI_FKASSAN_URL:-http://not-configured.invalid}
+  AiModels_OcrModelUrl: ${AI_OCR_URL:-http://not-configured.invalid}
+  AiModels_RelevanceScore_Norway: ${AI_RELEVANCE_URL:-http://not-configured.invalid}
+  AiModels_RelevanceScore_Denmark: ${AI_RELEVANCE_URL:-http://not-configured.invalid}
+  AiModels_RelevanceScore_Finland: ${AI_RELEVANCE_URL:-http://not-configured.invalid}
+  AiModels_EventPredict_Norway: ${AI_EVENT_PREDICT_URL:-http://not-configured.invalid}
+  AiModels_EventPredict_Denmark: ${AI_EVENT_PREDICT_URL:-http://not-configured.invalid}
+  AiModels_EventPredict_Finland: ${AI_EVENT_PREDICT_URL:-http://not-configured.invalid}
+  AiModels_RelevanceScoreUrl: not-configured        # host fragment: http://$VAR.svc.cluster.local:5000/...
+  AiModels_DocumentAnonymizeUrl: not-configured     # host fragment
+  Idp_LatestIdpMarkets: ${IDP_MARKETS:-Sweden}
+  Idp_Document_Timeout: "300"
+  Idp_Parallel_Documents: "2"
+  llmSummaries_ConcurrentEvaluations: "1"
+  ThreadingSettings_NumberOfConcurrentTasks_JournalEventsClassifier: "2"
+
+  # --- tuning / limits (safe defaults; tune per environment) ---
+  DefaultDaysUntilPasswordExpired: "90"
+  DefaultMaxLengthEvaluationAttribute: "4000"
+  DocumentDeletionBatchSize: "100"
+  MaxTextCharacterCount: "1000000"
+  MaxLengthExpertOpinion: "20000"
+  MaxCharCountExplanationMedicalTerminology: "2000"
+  MaximumPasswordCount: "5"
+  PasswordRequestEmailExpiryHours: "24"
+  UserLockoutDurationInMinutes: "15"
+  WrongPasswordAttemptsUntilLockout: "5"
+  MaveraNetworkId: "1"
+  OcrService_MaxOcrDocumentsPerBatch: "5"
+  Ocr_Document_Timeout: "600"
+  Ocr_Engine_Iris: "true"
+  Ocr_Max_Page_Height: "4000"
+  Ocr_Max_Page_Width: "4000"
+  StorageService_MaxEvaluationDeletionPerBatch: "50"
+  StorageService_MaxDocumentAttachedObjectDeletionPerBatch: "50"
+
+  # --- secrets: intentionally blank. Flows depending on these will not work. ---
+  Okta_Domain: ${OKTA_DOMAIN:-}
+  Okta_AuthServerId: ${OKTA_AUTH_SERVER_ID:-}
+  Okta_Audience: ${OKTA_AUDIENCE:-api}
+  Okta_Audiences: ${OKTA_AUDIENCES:-api}
+  Okta_Groups: ${OKTA_GROUPS:-}
+  Okta_EventHookSecret: ${OKTA_EVENT_HOOK_SECRET:-}
+  Okta_InternalServices_ClientId: ${OKTA_INTERNAL_CLIENT_ID:-}
+  Okta_InternalServices_Secret: ${OKTA_INTERNAL_SECRET:-}
+  Okta_ProvisioningBaseUrl: ${OKTA_PROVISIONING_BASE_URL:-}
+  Okta_ProvisioningClientId: ${OKTA_PROVISIONING_CLIENT_ID:-}
+  Okta_ProvisioningPrivateKey: ${OKTA_PROVISIONING_PRIVATE_KEY:-}
+  Okta_ProvisioningPublicKeyId: ${OKTA_PROVISIONING_PUBLIC_KEY_ID:-}
+  InternalServices_Authority: http://mavera-identity-server
+  InternalServices_Audience: internalapi
+  InternalServicesSettings_Secret: ${INTERNAL_SERVICES_SECRET:-}
+  InternalServicesSettings_SystemAccountUserId: ${SYSTEM_ACCOUNT_USER_ID:-}
+  CryptoSettings_CryptoIV: ${CRYPTO_IV:-}
+  CryptoSettings_CryptoKey: ${CRYPTO_KEY:-}
+  ContractSettings_CallbackUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}/contract/callback
+  MailSettings_ApiKey: ${MAIL_API_KEY:-}
+  MailSettings_ApiKeyId: ${MAIL_API_KEY_ID:-}
+  MailSettings_BccMonitoringEnabled: "false"
+  MailSettings_MailEnvironment: ${ENV_NAME:-dokploy}
+  MailSettings_TestingEmailAddress: ${MAIL_TEST_ADDRESS:-}
+  SmsSettings_UserName: ${SMS_USERNAME:-}
+  SmsSettings_Password: ${SMS_PASSWORD:-}
+  SmbSettings_Server: ${SMB_SERVER:-}
+  SmbSettings_Share: ${SMB_SHARE:-}
+  SmbSettings_UserName: ${SMB_USERNAME:-}
+  SmbSettings_Password: ${SMB_PASSWORD:-}
+  Kuralink_ApiRoot: ${KURALINK_API_ROOT:-http://not-configured.invalid}
+  Kuralink_ServiceProviderApiKey: ${KURALINK_API_KEY:-}
+  MicrosoftTeamsWebhook_Kuralink: ${TEAMS_WEBHOOK:-}
+  MicrosoftTeamsWebhook_Kuralink_Notification_Enabled: "false"
+  Ver_PDFTRON_SERVER_SDK_LICENSE_KEY: ${APRYSE_LICENSE_KEY:-}
+  Ver_PDFTRON_SERVER_SDK_LICENSE_KEY_FOR_OCR: ${APRYSE_LICENSE_KEY_OCR:-}
+
+# -----------------------------------------------------------------------------
+# Shared service scaffolding
+# -----------------------------------------------------------------------------
+x-service-base: &service-base
+  restart: unless-stopped
+  # Each service declares both `image:` and `build:`. With no pull_policy,
+  # Compose would try to PULL from ACR first and only build after that fails —
+  # which means a doomed, unauthenticated registry round-trip on every deploy.
+  # `build` forces the local build and skips the pull entirely; the `image:`
+  # value is then just the name/tag applied to the image built on this host.
+  #
+  # To switch to pull-only later (once ci-template pushes a moving tag), change
+  # this to `always` and delete the `build:` blocks. See README.
+  pull_policy: build
+  entrypoint: ["/bin/sh", "/entrypoint.sh"]
+  volumes:
+    - ./config/entrypoint.sh:/entrypoint.sh:ro
+
+# Dependency fragments, merged per service.
+x-dep-otel: &dep-otel
+  otel-collector: { condition: service_started }
+x-dep-sql: &dep-sql
+  mssql-init: { condition: service_completed_successfully }
+x-dep-mongo: &dep-mongo
+  mongo-init: { condition: service_completed_successfully }
+x-dep-minio: &dep-minio
+  minio-init: { condition: service_completed_successfully }
+x-dep-rabbit: &dep-rabbit
+  rabbitmq: { condition: service_healthy }
+x-dep-redis: &dep-redis
+  redis: { condition: service_healthy }
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 5s
+  retries: 5
+  # Generous: on a VM booting many services at once, .NET cold start plus
+  # first-request JIT can easily exceed a 90s window.
+  start_period: 120s
+
+services:
+
+  # ===========================================================================
+  # PLATFORM  (profile: platform)
+  # ===========================================================================
+
+  mavera-identity-server:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-identity-server:${TAG:-develop}
+    build:
+      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-identity-server.git#${BRANCH_FALLBACK:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: mavera-identity-server.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/Vera/IdentityServer/api/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-identity-server
+          - mavera-identity-server.svc.cluster.local
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.mavera-identity.rule=Host(`${IDENTITY_HOST:?IDENTITY_HOST is not set}`)
+      - traefik.http.routers.mavera-identity.entrypoints=web
+      - traefik.http.services.mavera-identity.loadbalancer.server.port=80
+      # For HTTPS, prefer adding the domain in the Dokploy UI (it manages the
+      # labels and the certificate itself). If you would rather do it here,
+      # uncomment these and match your Traefik certResolver name:
+      # - traefik.http.routers.mavera-identity-tls.rule=Host(`${IDENTITY_HOST:?IDENTITY_HOST is not set}`)
+      # - traefik.http.routers.mavera-identity-tls.entrypoints=websecure
+      # - traefik.http.routers.mavera-identity-tls.tls.certresolver=letsencrypt
+      # - traefik.http.services.mavera-identity.loadbalancer.server.scheme=http
+
+  # The YARP gateway. Its ReverseProxy cluster addresses are the same
+  # $ServiceSettings_Services_* placeholders, so its whole routing table wires
+  # itself up from x-placeholders. This is the fleet's public entry point.
+  mavera-libertine:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-libertine:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-libertine.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: LibertineWeb.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-libertine
+          - mavera-libertine.svc.cluster.local
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.mavera-gateway.rule=Host(`${GATEWAY_HOST:?GATEWAY_HOST is not set}`)
+      - traefik.http.routers.mavera-gateway.entrypoints=web
+      - traefik.http.services.mavera-gateway.loadbalancer.server.port=80
+      # For HTTPS, prefer adding the domain in the Dokploy UI (it manages the
+      # labels and the certificate itself). If you would rather do it here,
+      # uncomment these and match your Traefik certResolver name:
+      # - traefik.http.routers.mavera-gateway-tls.rule=Host(`${GATEWAY_HOST:?GATEWAY_HOST is not set}`)
+      # - traefik.http.routers.mavera-gateway-tls.entrypoints=websecure
+      # - traefik.http.routers.mavera-gateway-tls.tls.certresolver=letsencrypt
+      # - traefik.http.services.mavera-gateway.loadbalancer.server.scheme=http
+
+  mavera-identity-client:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-identity-client:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-identity-client.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.Identity.Client.Api.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-identity-client
+          - mavera-identity-client.svc.cluster.local
+
+  mavera-user-service:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-user-service:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-user-service.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: UserService.Api.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/Vera/UserService/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-user-service
+          - mavera-user-service.svc.cluster.local
+
+  mavera-caregivers:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-caregivers:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-caregivers.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Caregivers.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/caregivers/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-caregivers
+          - mavera-caregivers.svc.cluster.local
+
+  mavera-notification-service:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-notification-service:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-notification-service.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: NotificationService.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/internal-notification/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-notification-service
+          - mavera-notification-service.svc.cluster.local
+
+  mavera-medical-advisor-network:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-medical-advisor-network:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-medical-advisor-network.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.MedicalAdvisorNetwork.Api.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/Vera/MedicalAdvisorNetwork/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-medical-advisor-network
+          - mavera-medical-advisor-network.svc.cluster.local
+
+  mavera-kuralink:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-kuralink:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-kuralink.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.Kuralink.Api.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/KuralinkClient/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-kuralink
+          - mavera-kuralink.svc.cluster.local
+
+  # No health endpoint in the app — deliberately no healthcheck.
+  mavera-dashboard:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-dashboard:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-dashboard.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Dashboard.Api.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-dashboard
+          - mavera-dashboard.svc.cluster.local
+
+  mavera-news-manager:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-news-manager:${TAG:-develop}
+    build:
+      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-news-manager.git#${BRANCH_FALLBACK:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: NewsManager.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-news-manager
+          - mavera-news-manager.svc.cluster.local
+
+  mavera-audit:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-audit:${TAG:-develop}
+    build:
+      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-audit.git#${BRANCH_FALLBACK:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera-Audit.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-audit
+          - mavera-audit.svc.cluster.local
+
+  mavera-background-task-schduler:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-background-task-schduler:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-background-task-schduler.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.TaskScheduler.Api.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-background-task-schduler
+          - mavera-background-task-schduler.svc.cluster.local
+
+  mavera-reflection:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-reflection:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-reflection.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["platform", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.Reflection.Api.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-reflection
+          - mavera-reflection.svc.cluster.local
+
+  # ===========================================================================
+  # EVALUATION  (profile: evaluation)
+  # ===========================================================================
+
+  mavera-evaluation-service:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-evaluation-service:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-evaluation-service.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["evaluation", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: EvaluationService.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/Vera/EvaluationService/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-evaluation-service
+          - mavera-evaluation-service.svc.cluster.local
+
+  mavera-enhanced-patient-view:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-enhanced-patient-view:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-enhanced-patient-view.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["evaluation", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: EnhancedPatientView.Api.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/enhanced-patient-view/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-enhanced-patient-view
+          - mavera-enhanced-patient-view.svc.cluster.local
+
+  mavera-fkassan-service:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-fkassan-service:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-fkassan-service.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["evaluation", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.FkassanService.Api.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/fkassan/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-fkassan-service
+          - mavera-fkassan-service.svc.cluster.local
+
+  # ===========================================================================
+  # DOCUMENTS  (profile: documents)
+  # ===========================================================================
+
+  mavera-document-service:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-document-service:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-document-service.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["documents", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: DocumentService.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/Vera/DocumentService/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-document-service
+          - mavera-document-service.svc.cluster.local
+
+  mavera-storage-service:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-storage-service:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-storage-service.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["documents", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: storage-api.dll
+      # storage-service reads ConnectionStrings:MaveraContext but points it at
+      # its own catalog via $ConnectionStrings_DB_Storage_Operations.
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/api/Storage/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-storage-service
+          - mavera-storage-service.svc.cluster.local
+
+  # Debian-based image with no wget/curl — deliberately no healthcheck
+  # (the app does expose FileConversionService/health).
+  mavera-file-conversion-service:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-file-conversion-service:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-file-conversion-service.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["documents", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.FileConversionService.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-file-conversion-service
+          - mavera-file-conversion-service.svc.cluster.local
+
+  mavera-pdf-generator-service:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-pdf-generator-service:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-pdf-generator-service.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["documents", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: API.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-pdf-generator-service
+          - mavera-pdf-generator-service.svc.cluster.local
+
+  # Debian-based, self-contained build, needs the Apryse licence key to do work.
+  mavera-ocr:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ocr:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ocr.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["documents", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: ocr-api.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ocr
+          - mavera-ocr.svc.cluster.local
+
+  # ===========================================================================
+  # AI SERVICES  (profile: ai)
+  # These are the .NET orchestrators; the Python models they call are separate
+  # services outside these 29 repos — see the AiModels_* variables.
+  # ===========================================================================
+
+  mavera-ai-client-relevance-score:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-client-relevance-score:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-client-relevance-score.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["ai", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: RelevanceScore.Api.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ai-client-relevance-score
+          - mavera-ai-client-relevance-score.svc.cluster.local
+
+  mavera-ai-document-anonymize:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-document-anonymize:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-anonymize.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["ai", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.Ai.DocumentAnonymize.dll
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ai-document-anonymize
+          - mavera-ai-document-anonymize.svc.cluster.local
+
+  mavera-ai-document-classifier:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-document-classifier:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-classifier.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["ai", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: DocumentClassifier.API.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/api/documentclassifier/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ai-document-classifier
+          - mavera-ai-document-classifier.svc.cluster.local
+
+  mavera-ai-document-processor:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-document-processor:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-processor.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["ai", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.Ai.DocumentProcessor.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/api/documentprocessor/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ai-document-processor
+          - mavera-ai-document-processor.svc.cluster.local
+
+  mavera-ai-document-summaries:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-document-summaries:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-summaries.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["ai", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: DocumentSummaries.API.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/documentSummaries/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ai-document-summaries
+          - mavera-ai-document-summaries.svc.cluster.local
+
+  mavera-ai-identitycheck-processor:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-identitycheck-processor:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-identitycheck-processor.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["ai", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: IdentityCheck.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/IdentityCheck/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ai-identitycheck-processor
+          - mavera-ai-identitycheck-processor.svc.cluster.local
+
+  mavera-ai-journalevents-classifier:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-journalevents-classifier:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-journalevents-classifier.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["ai", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: JournalEventsClassifier.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/api/JournalEventsClassifier/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ai-journalevents-classifier
+          - mavera-ai-journalevents-classifier.svc.cluster.local
+
+  mavera-ai-timeline:
+    <<: *service-base
+    image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-timeline:${TAG:-develop}
+    build:
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-timeline.git#${BRANCH:-develop}
+      dockerfile: dockerfile/Dockerfile
+    profiles: ["ai", "all"]
+    environment:
+      <<: *placeholders
+      APP_DLL: Mavera.Ai.Timeline.dll
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/api/timeline/health || exit 1"]
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-ai-timeline
+          - mavera-ai-timeline.svc.cluster.local
+
+  # ===========================================================================
+  # EXTRAS (profile: extras) — referenced by config but outside the 29-repo
+  # scope you asked for, so they are commented out rather than enabled.
+  #
+  # mavera-translation-service is the one that actually matters: dashboard,
+  # evaluation-service, notification-service and user-service all resolve
+  # $ServiceSettings_Services_Translation, so those four currently point at a
+  # host with no container. Uncomment this block to close that gap.
+  # ===========================================================================
+
+  # mavera-translation-service:
+  #   <<: *service-base
+  #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-translation-service:${TAG:-develop}
+  #   build:
+  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-translation-service.git#${BRANCH_FALLBACK:-develop}
+  #     dockerfile: dockerfile/Dockerfile
+  #   profiles: ["extras", "all"]
+  #   environment:
+  #     <<: *placeholders
+  #     APP_DLL: translation-service.dll
+  #   depends_on: { <<: [*dep-otel, *dep-sql, *dep-rabbit] }
+  #   networks:
+  #     dokploy-network:
+  #       aliases: ["mavera-translation-service.svc.cluster.local"]
+
+  # mavera-client-webhook:            # $ServiceSettings_Services_WebhookSubscriptionService
+  #   <<: *service-base
+  #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-client-webhook:${TAG:-develop}
+  #   build:
+  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-webhook.git#${BRANCH_FALLBACK:-develop}
+  #     dockerfile: dockerfile/Dockerfile
+  #   profiles: ["extras", "all"]
+  #   environment:
+  #     <<: *placeholders
+  #     APP_DLL: Webhooks.API.dll
+  #   depends_on: { <<: [*dep-otel, *dep-sql, *dep-rabbit] }
+  #   networks:
+  #     dokploy-network:
+  #       aliases: ["mavera-client-webhook.svc.cluster.local"]
+
+  # mavera-client-external-service:   # $ServiceSettings_Services_Client
+  #   <<: *service-base
+  #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-client-external-service:${TAG:-develop}
+  #   build:
+  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-external-service.git#${BRANCH_FALLBACK:-develop}
+  #     dockerfile: dockerfile/Dockerfile
+  #   profiles: ["extras", "all"]
+  #   environment:
+  #     <<: *placeholders
+  #     APP_DLL: API.dll
+  #   depends_on: { <<: [*dep-otel, *dep-sql, *dep-rabbit] }
+  #   networks:
+  #     dokploy-network:
+  #       aliases: ["mavera-client-external-service.svc.cluster.local"]
+
+networks:
+  # Shared with docker-compose.infra.yml and with Dokploy's Traefik.
+  # Outside Dokploy: docker network create dokploy-network
+  dokploy-network:
+    external: true

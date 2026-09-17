@@ -14,11 +14,17 @@
 # override the base. An unrendered override silently wins, and the symptom is a
 # literal $Placeholder reaching the app from a file nothing ever touched.
 #
+# Also reconciles capitalisation. The repos are not consistent with each other:
+# some templates spell a placeholder $log_Level and others $Log_Level, while
+# x-placeholders can only define one spelling. envsubst matches names exactly
+# and Linux environment variables are case-sensitive, so the other spelling
+# would render as an empty string -- silently. For any placeholder this file
+# uses that is unset, the first-letter case variant is tried before giving up.
+#
 # Two distinct failure modes, and the second is the quiet one:
-#   * a literal "$Name" reaching the app  -> this script did not run at all
-#   * a config value that is unexpectedly EMPTY -> the variable was not set;
-#     envsubst substitutes the empty string for an unset name rather than
-#     leaving the literal. The UNSET report below names those.
+#   * a literal "$Name" reaching the app -> this script did not run at all
+#   * a config value that is unexpectedly EMPTY -> the variable was not set
+#     under either spelling. The UNSET report below names those.
 #
 # Fails loudly rather than starting a service with unrendered config.
 # ---------------------------------------------------------------------------
@@ -36,23 +42,42 @@ if ! command -v envsubst >/dev/null 2>&1; then
     exit 1
 fi
 
+# Flip the case of the first character: Log_Level <-> log_Level.
+flip_first() {
+    head=$(printf '%s' "$1" | cut -c1 | tr '[:upper:][:lower:]' '[:lower:][:upper:]')
+    printf '%s%s' "$head" "$(printf '%s' "$1" | cut -c2-)"
+}
+
 unset_names=""
+aliased_names=""
 rendered_files=""
 
 for src in /app/appsettings*.json; do
     [ -f "$src" ] || continue
 
-    # Collect the placeholder names before rendering, so the ones that resolve
-    # to nothing can be reported. Names match [A-Za-z_][A-Za-z0-9_]* and cannot
-    # contain shell metacharacters, so the eval below is safe.
+    # Placeholder names cannot contain shell metacharacters (they match
+    # [A-Za-z_][A-Za-z0-9_]*), so the evals below are safe.
     for name in $(grep -oE '\$[A-Za-z_][A-Za-z0-9_]*' "$src" | sort -u | tr -d '$'); do
         eval "value=\${$name-__MAVERA_UNSET__}"
-        if [ "$value" = "__MAVERA_UNSET__" ]; then
-            case " $unset_names " in
+        [ "$value" != "__MAVERA_UNSET__" ] && continue
+
+        # Not set under this spelling. Try the other capitalisation before
+        # treating it as missing.
+        alt=$(flip_first "$name")
+        eval "altvalue=\${$alt-__MAVERA_UNSET__}"
+        if [ "$altvalue" != "__MAVERA_UNSET__" ]; then
+            export "$name=$altvalue"
+            case " $aliased_names " in
                 *" $name "*) ;;
-                *) unset_names="$unset_names $name" ;;
+                *) aliased_names="$aliased_names $name<-$alt" ;;
             esac
+            continue
         fi
+
+        case " $unset_names " in
+            *" $name "*) ;;
+            *) unset_names="$unset_names $name" ;;
+        esac
     done
 
     envsubst < "$src" > /tmp/appsettings.rendered.json
@@ -81,11 +106,16 @@ fi
 
 echo "[entrypoint] rendered:$rendered_files"
 
+if [ -n "$aliased_names" ]; then
+    # Informational: this repo spells these placeholders differently from
+    # x-placeholders, and the other capitalisation supplied the value.
+    echo "[entrypoint] case-matched:$aliased_names"
+fi
+
 if [ -n "$unset_names" ]; then
-    # Not fatal: several placeholders are intentionally blank (the Okta and
-    # mail secrets). But a value that is blank because its variable is spelled
-    # differently in this repo than in x-placeholders looks identical from the
-    # app's side, so name them all.
+    # Not fatal: several placeholders are intentionally blank (the Okta, mail,
+    # SMS and SMB secrets). But a value that is blank because nothing defines
+    # it looks identical from the app's side, so name them all.
     echo "[entrypoint] UNSET (rendered as empty strings):" >&2
     for name in $unset_names; do
         echo "    \$$name" >&2

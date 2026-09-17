@@ -57,9 +57,13 @@ def case_aliases(env: dict) -> dict:
     empty string, silently. (On Windows the mismatch is invisible, because
     environment lookups there are case-insensitive.)
 
-    Since the placeholder names live in the service repos and cannot be fixed
-    from here, supply both spellings. An alias never overwrites a name that
-    x-placeholders defines in its own right.
+    config/entrypoint.sh now reconciles this at container start -- for any
+    placeholder a template uses that is unset, it tries the other
+    capitalisation -- which fixes compose as well and keeps the env block at
+    one entry per placeholder. This function remains for the case where the
+    entrypoint is bypassed; pass --case-aliases to use it.
+
+    An alias never overwrites a name x-placeholders defines in its own right.
     """
     aliases = {}
     for key, value in env.items():
@@ -138,11 +142,12 @@ def main() -> None:
     parser.add_argument("--env-file", default=".env")
     parser.add_argument("--out", default="build/dokploy")
     parser.add_argument(
-        "--no-case-aliases",
+        "--case-aliases",
         action="store_true",
-        help="do not emit first-letter case variants of the placeholders. The "
-        "service repos disagree on capitalisation ($log_Level vs $Log_Level), "
-        "so without these some values render empty on Linux.",
+        help="also emit first-letter case variants of every placeholder. Not "
+        "normally needed: config/entrypoint.sh reconciles capitalisation at "
+        "container start, which covers compose too. Use this only if the "
+        "entrypoint is bypassed.",
     )
     args = parser.parse_args()
 
@@ -166,7 +171,7 @@ def main() -> None:
         apps.append(describe(name, service, env))
 
         written = dict(env)
-        if not args.no_case_aliases:
+        if args.case_aliases:
             aliases = case_aliases(env)
             alias_counts.append(len(aliases))
             written.update(aliases)

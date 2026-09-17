@@ -7,7 +7,8 @@ There are two ways to run this, and they are not the same shape:
 
 | | file | what it is for |
 |---|---|---|
-| **Dokploy** | `docker-compose.infra.yml` + `scripts/dokploy/` | the deployed environment. Infrastructure is one Compose service; each of the 29 apps is its own Dokploy **Application**, so pull requests get **preview deployments**. |
+| **Dokploy** | `docker-compose.infra.yml` + `docker-compose.apps.yml` | the deployed environment: two Compose services, infrastructure and the 29 apps. |
+| **Previews** | `scripts/dokploy/` | one Dokploy **Application** per repo that wants PR preview deployments — the only service type Dokploy gives previews to. |
 | **Local** | `docker-compose.yml` | one all-in-one stack on your own machine. Unchanged, still the quickest way to bring the whole fleet up. |
 
 ```
@@ -23,51 +24,61 @@ For the deployed environment, read *Topology on Dokploy* next, then `DEPLOY.md`.
 
 ## Topology on Dokploy
 
-### Why it is not one Compose app any more
+### Why it is split this way
 
 Dokploy's **preview deployments** — a throwaway environment per pull request — only exist for the
-**Application** service type. Its Docker-Compose service type has no preview feature at all. So for as
-long as the whole fleet was one Compose app, there were no previews for anything.
+**Application** service type. Its Docker-Compose service type has no preview feature at all. That is
+the whole reason any of this is not one compose file.
 
-Every service repo already ships `dockerfile/Dockerfile`, so each becomes a Dokploy Application that
-Dokploy builds straight from GitHub. Infrastructure has no PRs and needs none, so it stays as Compose:
+The obvious move is to make all 29 services Applications. That was tried and abandoned, for a concrete
+reason: an Application needs two things set that a compose service gets for free —
+
+- `command`, the `envsubst` entrypoint override, and
+- `networkSwarm`, the DNS aliases every service resolves its siblings by.
+
+Both are written through `application.update`, which on this Dokploy version **accepts the call and
+persists nothing**. Confirmed by reading the Application back: `command: None`, `args: None`,
+`networkSwarm: None`, while everything written by `saveGithubProvider`, `saveBuildType` and
+`saveEnvironment` persisted correctly. That leaves setting three fields by hand, per service, forever.
+
+In compose both are four lines of YAML that already work. And previews do not need production to be
+Applications — a preview Application works perfectly well alongside a compose-based production. So:
 
 ```
 Dokploy project "mavera" / environment "production"
 │
-├── compose service                        ./docker-compose.infra.yml
+├── compose service  "mavera-infra"     ./docker-compose.infra.yml
 │     sqlserver + mssql-backups-init + mssql-init
 │     redis · rabbitmq · mongo + mongo-init · minio + minio-init
 │     seq · otel-collector · gotenberg
-│     all on dokploy-network (external)
 │
-├── 29 Applications  (production)          GitHub → Dockerfile
-│     network aliases: <svc> and <svc>.svc.cluster.local
+├── compose service  "mavera-apps"      ./docker-compose.apps.yml
+│     the 29 .NET services, profiles platform / evaluation / documents / ai
+│     aliases: <svc> and <svc>.svc.cluster.local
 │     mavera-libertine       → GATEWAY_HOST
 │     mavera-identity-server → IDENTITY_HOST
 │
-└── N Applications  (preview hosts)        opt-in, one per repo you want previews on
-      previews on, no aliases → preview-<app>-<hash>.<wildcard>
+└── Application  "<svc>-pr"             opt-in, one per repo that wants previews
+      GitHub → Dockerfile, previews on, NO aliases
+      Run Command + entrypoint mount set once in the UI
+      → preview-<app>-<hash>.<wildcard>
 ```
 
-Two Dokploy settings on the infra service are load-bearing:
+Both compose services sit on the external `dokploy-network`, which is what lets the apps reach
+infrastructure, and lets a preview container reach the whole production fleet.
 
-- **Compose Type `Docker Compose`, not `Stack`.** `docker stack deploy` renames services to
-  `<appName>_sqlserver`, which breaks plain-name DNS (and Swarm has no `build`).
-- **Isolated Deployments off.** It moves the stack onto a private network and *off* `dokploy-network`,
-  which is exactly the connectivity the Applications need.
+What this gives up: per-service deploy and rollback buttons in the Dokploy UI for production. A deploy
+is per compose service, so `docker-compose.apps.yml` redeploys as a unit. Profiles still let you stage
+a first rollout.
 
-### How the services still find each other
+### How the services find each other
 
 Compose registers each service's own name as a network alias on **every** network its container joins,
 including an external one. So `sqlserver`, `mongo`, `redis`, `minio`, `otel-collector`, `gotenberg` and
-`seq` resolve from any Application with **no change to any `$Placeholder` value**. Only `rabbitmq` needs
-an alias declared, for `rabbitmq.rabbitmq.svc.cluster.local`.
+`seq` resolve from the app stack with **no change to any `$Placeholder` value**.
 
-App-to-app is the harder half. Dokploy appends a random 6-character suffix to every Application's name
-and then refuses to change it, so the real Swarm service name is something like
-`mavera-user-service-k3f9qz` — a name no `appsettings.json` can know. And the wiring here is name-based
-and partly unreachable from outside the app repos:
+App-to-app needs both DNS forms, because the wiring is name-based and partly unreachable from outside
+the service repos:
 
 | what | value |
 |---|---|
@@ -76,197 +87,121 @@ and partly unreachable from outside the app repos:
 | `InternalServices_Authority` | `http://mavera-identity-server` (no suffix) |
 | RabbitMQ host | `rabbitmq.rabbitmq.svc.cluster.local`, hard-coded in 24 of the 29 repos |
 
-So both `<svc>` and `<svc>.svc.cluster.local` have to resolve, and the mechanism is Dokploy's Swarm
-**Network** setting, handed to the Docker Engine API verbatim as `TaskTemplate.Networks`:
+So every service declares both:
 
-```json
-[{ "Target": "dokploy-network",
-   "Aliases": ["mavera-user-service", "mavera-user-service.svc.cluster.local"] }]
+```yaml
+    networks:
+      dokploy-network:
+        aliases:
+          - mavera-user-service
+          - mavera-user-service.svc.cluster.local
 ```
 
-Naming this **replaces** Dokploy's default attachment, so `dokploy-network` must be listed explicitly
-or Traefik loses the route. `scripts/dokploy/provision.py` sets it for you.
+Naming any alias replaces the implicit one Compose would have added, which is why the bare name is
+spelled out too.
 
-### Why two Applications per repo
+Two Dokploy settings on both compose services are load-bearing:
 
-A preview is deployed by swapping only `appName` on the parent Application and re-running the same
-builder, so it inherits the parent's `networkSwarm` — **aliases included**. If the production
-Application for `mavera-user-service` carries `mavera-user-service.svc.cluster.local`, so does every
-preview of it, and Docker's embedded DNS round-robins between them: roughly half of production's
-internal calls would land in an unreviewed PR build. There is no per-preview network override.
+- **Compose Type `Docker Compose`, not `Stack`.** `docker stack deploy` renames services to
+  `<appName>_sqlserver`, which breaks plain-name DNS (and Swarm has no `build`).
+- **Isolated Deployments off.** It moves a stack onto a private network and *off* `dokploy-network`.
 
-The roles are therefore split:
+### Previews
 
-| | production | preview host |
+A preview Application is added per repo, and it is **only** a preview host — it is never deployed
+itself. It carries **no network aliases**, which is the point: previews inherit their parent's
+`networkSwarm`, so a preview of an aliased Application would answer to a production name and Docker's
+DNS would round-robin roughly half of production's internal calls into an unreviewed PR build.
+
+| | production (compose) | preview host (Application) |
 |---|---|---|
-| name | `mavera-user-service` | `mavera-user-service-pr` |
-| aliases | yes | **no** |
-| previews | off | **on** |
-| auto-deploy | on | off — never deployed itself; it only spawns previews |
+| where | `docker-compose.apps.yml` | Dokploy Application `<svc>-pr` |
+| aliases | both DNS forms | **none** |
+| previews | n/a | on |
+| deployed | yes | never — it only spawns previews |
 
-A preview reaches its 28 siblings and all infrastructure through the production aliases, is reached
-itself only on its own generated URL, and can never answer to a production name.
+A preview reaches its 28 siblings and all infrastructure through the compose stack's aliases, and is
+reached itself only on its own generated URL.
 
-Preview hosts are opt-in per repo, because each one costs up to `previewLimit` containers plus a .NET
-SDK build on the shared VM.
+`command`/`args` are inherited by previews and there is no `previewCommand`, so the Run Command and the
+entrypoint mount are set **once** per preview host in the UI and cover every future PR on that repo.
 
-### How `entrypoint.sh` reaches the container
+### `docker-compose.yml` is still the source of truth
 
-Applications have no Compose file to bind-mount from, so the `envsubst` step (see *How configuration
-works*) is carried by Dokploy's Run Command, which despite the docs describing it as a debugging `exec`
-maps to `ContainerSpec.Command` — a real ENTRYPOINT override. `command` and `args` are both inherited
-by previews, and there is no `previewCommand`, so one setting covers both.
-
-The two modes exist because only one of them is a conventional Dokploy code path. If the app starts
-and reads literal `$Placeholder` values, the entrypoint did not run — that symptom is unambiguous,
-because `envsubst` turns an *unset* variable into an empty string and never leaves a literal `$name`.
-Switch to `bind` and redeploy. See DEPLOY.md *When the entrypoint does not run*.
-
-**Default (`--entrypoint-mode inline`): the script is sent as the container's arguments.**
-
-```
-Command: ["/bin/sh"]     Args: ["-c", "<the whole of config/entrypoint.sh>"]
-```
-
-Dokploy splits `command` on spaces with no quote handling — hence the bare `/bin/sh` — but `args` is a
-genuine string array, so the script survives verbatim, newlines and all. Nothing has to exist on the
-Docker host, which also means nothing to get wrong on a multi-node Swarm. `config/entrypoint.sh` stays
-the single source of truth; `provision.py` reads it at provisioning time.
-
-**Fallback (`--entrypoint-mode bind`): bind-mount it from the host**, default
-`/srv/mavera/entrypoint.sh`, overridable with `--entrypoint-host-path`. Deliberately *not* under
-`/etc/dokploy` — that is Dokploy's own data root, and it prunes paths inside it
-(`removeDirectoryCode` does `rm -rf /etc/dokploy/applications/<appName>` when an app or a preview is
-torn down). Deliberately a *bind* mount and not a Dokploy **file** mount: Dokploy builds a
-file mount's source path from the **preview's** appName while writing the content under the
-**parent's**, so a preview would find an empty directory where the script should be. Bind mounts take
-an explicit host path and resolve identically for both.
-
-In bind mode the file stays `644` — Dokploy never marks mounted files executable, which is why it is
-run *through* `/bin/sh` rather than executed.
-
-### The repos disagree on placeholder capitalisation
-
-`envsubst` matches environment variable names exactly, and Linux environment variables are
-case-sensitive. **The 29 `appsettings.json` templates are not consistent with each other**: some spell
-a placeholder `$log_Level` and others `$Log_Level`. `x-placeholders` can only define one spelling, so
-whichever it picks, the other set of repos renders that value as an **empty string** — silently, with no
-error and no unrendered-placeholder warning.
-
-This is invisible during local development on Windows, where environment lookups are case-insensitive.
-
-The placeholder names live in the service repos and cannot be fixed from here, so
-`generate-manifest.py` emits **both spellings**: for every placeholder it adds a first-letter
-case variant carrying the same value (167 aliases alongside 170 placeholders, so ~337 keys per service).
-An alias never overwrites a name `x-placeholders` defines in its own right, and the three conventional
-`ALL_CAPS` variables (`APP_DLL`, `ASPNETCORE_ENVIRONMENT`, `ASPNETCORE_HTTP_PORTS`) are left alone.
-`--no-case-aliases` turns it off.
-
-> **This does not fix `docker-compose.yml`.** The local all-in-one stack feeds `x-placeholders`
-> straight into the containers, so locally a repo whose template disagrees with the spelling in
-> `x-placeholders` still gets an empty value. It matters much less there — but if a value is
-> mysteriously blank locally and fine on Dokploy, this is why.
-
-When a value arrives empty, or a placeholder survives as a literal, check inside the container:
-
-```sh
-# should be empty: anything left here was never substituted at all
-grep -oE '"\$[A-Za-z_][A-Za-z0-9_]*"' /app/appsettings.json | sort -u
-```
-
-### The entrypoint renders every `appsettings*.json`
-
-Not just the base file. `ASPNETCORE_ENVIRONMENT` is set to `Production`, so .NET loads
-`appsettings.Production.json` *on top of* `appsettings.json` wherever a repo has one — and an
-unrendered override silently wins over a rendered base. The symptom is a literal `$Placeholder`
-reaching the app even though the entrypoint clearly ran.
-
-It also reports what it did, because the two failure modes look nothing alike from the app's side:
-
-```
-[entrypoint] rendered: /app/appsettings.json /app/appsettings.Production.json
-[entrypoint] UNSET (rendered as empty strings):
-    $Okta_Domain
-[entrypoint] appsettings.json rendered; starting Mavera-Audit.dll
-```
-
-A literal `$Name` surviving means the file was never rendered. A value arriving **empty** means the
-variable was not set under that exact spelling — `envsubst` substitutes the empty string for an unset
-name rather than leaving the literal, so without the `UNSET` list that failure is completely silent.
-Several placeholders are intentionally blank (the Okta, mail, SMS and SMB secrets), so the list is
-informational, not an error.
-
-`scripts/dokploy/test_entrypoint.sh` exercises all of this against a throwaway `/app`. Run it on
-Linux for full coverage — one case covers case-sensitivity, which cannot be demonstrated on Windows,
-where environment lookups are case-insensitive.
-
-### Provisioning
-
-Nothing is hand-maintained. `docker-compose.yml` stays the source of truth for configuration, and the
-Dokploy side is derived from it:
+`docker-compose.infra.yml` and `docker-compose.apps.yml` are generated from it and committed. It also
+remains the all-in-one local stack. When `x-placeholders` changes, regenerate rather than editing three
+files:
 
 ```bash
-export DOKPLOY_URL=https://dokploy.example.com
-export DOKPLOY_API_KEY=...                       # Settings -> Profile -> API/CLI
-export DOKPLOY_PROJECT=mavera                    # or --project; the project must already exist
-
-python scripts/dokploy/generate-manifest.py      # docker compose config -> manifest + env blocks
-python scripts/dokploy/provision.py --list       # what exists in Dokploy now
-python scripts/dokploy/provision.py              # dry run: print every API call
-python scripts/dokploy/provision.py --apply      # create/update the 29 production Applications
-python scripts/dokploy/provision.py --role preview --only mavera-audit --apply
+python scripts/dokploy/generate-manifest.py   # env blocks for the preview Applications
 ```
 
-The target project and environment default to `mavera` / `production` and are settable by name
-(`--project` / `--environment`) or by id (`--project-id` / `--environment-id`, for when two projects
-share a name). Every run prints which project and environment it resolved, and the applications already
-in it, before writing anything; an unknown name produces a listing of what is actually there rather
-than a failed guess.
+`scripts/dokploy/provision.py` still creates the preview-host Applications (GitHub provider, build type,
+environment, domains — the parts that demonstrably persist) and its `--inspect` / `--verify-only` modes
+are how you check what Dokploy actually stored.
 
-Two things make re-runs safe, which matters because a 29-service run can fail half-way:
+### How `entrypoint.sh` gets into the containers
 
-- **Existing applications are found via `environment.one`**, the endpoint the Dokploy UI uses, falling
-  back to `project.all` only if that fails. `project.all`'s response shape is not described in
-  Dokploy's OpenAPI document, so relying on it to nest applications would risk missing one and creating
-  a duplicate. The names it found are printed, not just counted, so the decision is auditable.
-- **`--update-only`** refuses to create anything and fails instead — the safe way to resume.
+Every image's ENTRYPOINT is `dotnet <App>.dll`, and it has to be replaced with "render the appsettings
+templates, then exec dotnet" (see *How configuration works*). In the compose stacks that is a bind
+mount plus an `entrypoint:` override, which is what `x-service-base` already does:
 
-`provision.py` also fills in required request fields from the instance's own OpenAPI document, printing
-each one. Dokploy's tRPC input schemas gain required fields between releases (`saveBuildType` picked up
-`herokuVersion` and `railpackVersion`), and discovering those one HTTP 400 at a time — part-way through
-a 29-service run — is worse than reading the schema up front.
+```yaml
+  entrypoint: ["/bin/sh", "/entrypoint.sh"]
+  volumes:
+    - ./config/entrypoint.sh:/entrypoint.sh:ro
+```
 
-And because the API can accept every call while still leaving state unset, `--apply` reads each
-Application back and checks it against the manifest, refusing to report success if anything is off.
-`--verify-only` runs the same check without writing. This exists because of a specific failure:
-`buildType` defaults to **`nixpacks`**, which ignores `dockerfile/Dockerfile` entirely and picks its own
-SDK version, so an Application whose `saveBuildType` never landed builds happily against the wrong .NET
-major and only fails later, far from the cause.
+For a preview **Application** there is no compose file to mount from, so it needs Dokploy's Run Command
+(`/bin/sh /entrypoint.sh`, which maps to `ContainerSpec.Command` — a real ENTRYPOINT override despite
+the docs describing it as a debugging `exec`) plus a bind mount of the script from the host. Set once
+per preview host; previews inherit both.
 
-`generate-manifest.py` runs `docker compose --profile all config`, which does the `${VAR}` interpolation
-and the `x-placeholders` anchor merge, then writes `build/dokploy/manifest.json` and one fully-resolved
-`build/dokploy/env/<service>.env` per app. **Those env files contain real secrets and are gitignored** —
-regenerate, never commit. `provision.py` is idempotent, defaults to a dry run, validates the endpoints
-and fields it needs against the instance's own OpenAPI document before writing anything, and records
-each generated `appName` in `build/dokploy/state.json` (you cannot get them back any other way).
+The script does three things worth knowing about:
 
-It deliberately does **not** deploy. Deploy from the Dokploy UI once a service looks right.
+- **It renders every `appsettings*.json`, not just the base file.** `ASPNETCORE_ENVIRONMENT` is set, so
+  .NET loads `appsettings.Production.json` *on top of* `appsettings.json` wherever a repo has one — and
+  an unrendered override silently wins over a rendered base.
+- **It reconciles placeholder capitalisation.** The repos are not consistent with each other: some
+  templates spell a placeholder `$log_Level`, others `$Log_Level`, and `x-placeholders` can only define
+  one. `envsubst` matches names exactly and Linux environment variables are case-sensitive, so the
+  other spelling would render as an empty string. For any placeholder a template uses that is unset,
+  the first-letter case variant is tried before giving up. This is why the env block is one entry per
+  placeholder rather than two, and why it works in compose as well.
+- **It reports what happened**, because the two failure modes are indistinguishable from the app's side:
 
-### What this changes from the Compose-only setup
+  ```
+  [entrypoint] rendered: /app/appsettings.json /app/appsettings.Production.json
+  [entrypoint] case-matched: log_Level<-Log_Level
+  [entrypoint] UNSET (rendered as empty strings):
+      $Okta_Domain
+  [entrypoint] appsettings.json rendered; starting Mavera-Audit.dll
+  ```
 
-- **`depends_on` gating is gone.** Applications are independent Swarm services with no cross-service
-  ordering, so on a cold start they crash-loop until infrastructure answers and the restart policy
-  converges them. Deploy the infra service first and let it settle.
-- **`GH_PAT` is no longer needed for builds.** The Dokploy GitHub App authenticates the clone, which
-  also removes the PAT from BuildKit history (see *`GH_PAT` is embedded in the build-context URL* —
-  that section now applies only to local builds).
-- **Volume names change.** Compose prefixes volumes with the project name, and Dokploy sets that to the
-  service's `appName`. The infra stack's `sqlserver-data` is therefore *not* the old
-  `mavera_sqlserver-data` — the SQL databases are restored from `Databases.zip` on first run, so this is
-  usually fine, but anything you care about in the old volumes must be copied across deliberately.
-- **Capacity.** A 4 vCPU / 16 GB VM at ~12–14 GB steady state has no real headroom for previews. Keep
-  `--preview-limit` at 2, enable preview hosts only where work is happening, and plan on 8 vCPU / 32 GB
-  or a Dokploy Build Server before turning previews on broadly.
+  A literal `$Name` surviving means the file was never rendered — `envsubst` substitutes the empty
+  string for an unset name and never leaves a literal. A value arriving **empty** means nothing defined
+  it under either spelling. Blank Okta, mail, SMS and SMB entries are expected.
+
+`scripts/dokploy/test_entrypoint.sh` exercises all of this against a throwaway `/app`. Run it on Linux
+for full coverage — one case covers case-sensitivity, which cannot be demonstrated on Windows, where
+environment lookups are case-insensitive.
+
+### What changed from the original single-compose setup
+
+- **`depends_on` no longer spans the two stacks.** The apps used to wait for `mssql-init`, `mongo-init`
+  and `minio-init` to complete and for `rabbitmq` and `redis` to be healthy. Compose cannot wait on a
+  service in another project, so those are gone: deploy `mavera-infra` first and let it settle, or the
+  app containers crash-loop until it answers. Within a stack, `depends_on` still works.
+- **`GH_PAT` is still required.** `docker-compose.apps.yml` keeps the git-URL build contexts, so
+  BuildKit clones the 29 service repos with it — and it still ends up in build history (see *`GH_PAT` is
+  embedded in the build-context URL*). Only the preview Applications use the Dokploy GitHub App instead.
+- **Volume names changed.** Compose prefixes volumes with the project name, and Dokploy sets that to the
+  compose service's `appName`. `sqlserver-data` is therefore not the old `mavera_sqlserver-data`. The
+  SQL databases restore from `Databases.zip` on first run so this is usually fine, but anything you care
+  about in the old volumes must be copied across deliberately.
+- **Capacity.** A 4 vCPU / 16 GB VM at ~12–14 GB steady state has little headroom. Each preview adds a
+  container plus a .NET SDK build, so keep `--preview-limit` low and enable preview hosts only where
+  work is happening.
 
 ---
 
@@ -356,23 +291,22 @@ ssh -L 15672:localhost:15672 ec2-user@<vm>   # then docker compose port, or add 
 
 `DEPLOY.md` is the step-by-step. In outline:
 
-1. **Create → Compose**, pointed at this repo, **Compose Path `./docker-compose.infra.yml`**.
-   **Compose Type must be `Docker Compose`, not `Stack`**, and leave **Isolated Deployments off** —
-   see *Topology on Dokploy* for why both matter.
-2. Paste `.env.example` into that service's **Environment** tab, fill in the passwords, and **turn on
-   env-file generation**. Only the ~15 infrastructure knobs are actually read from it; the rest are
-   there so the same file still drives `generate-manifest.py`.
-3. Deploy it, and confirm the SQL restore in the `mssql-init` logs before going further.
-4. Connect the Dokploy **GitHub App** to the `MaveraDSS` org. Preview deployments only work for
-   `sourceType: github`, so this is not optional.
-5. Run `scripts/dokploy/generate-manifest.py`, then `provision.py` — dry run first, one service
-   (`mavera-audit` is the right pilot) before all 29.
-6. Deploy the Applications from the UI, gateway and identity server last so their domains come up
-   against a fleet that is already answering.
-
-`COMPOSE_PROFILES` and `COMPOSE_PARALLEL_LIMIT` no longer apply to the deployed environment — profiles
-were a way to stage one big Compose app, and Dokploy now builds each Application separately. Both still
-matter locally.
+1. **Create → Compose**, Compose Path **`./docker-compose.infra.yml`**. **Compose Type must be
+   `Docker Compose`, not `Stack`**, and leave **Isolated Deployments off** — see *Topology on Dokploy*
+   for why both matter. Paste `.env.example` into its **Environment** tab, fill in the passwords, and
+   **turn on env-file generation**.
+2. Deploy it, and confirm the SQL restore in the `mssql-init` logs before going further.
+3. **Create → Compose** again, Compose Path **`./docker-compose.apps.yml`**, same Compose Type and
+   Isolated Deployments settings, same environment block (it needs `GH_PAT`, the hostnames and the
+   Okta credentials as well as the infrastructure passwords).
+4. Deploy it one profile at a time via `COMPOSE_PROFILES` — `platform`, then `evaluation`,
+   `documents`, `ai` — and keep `COMPOSE_PARALLEL_LIMIT=2`, because 29 concurrent `dotnet build`
+   processes will OOM a 16 GB VM.
+5. Add the two domains: `mavera-libertine` → `GATEWAY_HOST`, `mavera-identity-server` →
+   `IDENTITY_HOST`.
+6. **Only for previews:** connect the Dokploy **GitHub App** to the `MaveraDSS` org, then run
+   `scripts/dokploy/generate-manifest.py` and `provision.py --role preview --only <repo> --apply` for
+   each repo that wants them. Finish each one in the UI with Run Command and the entrypoint mount.
 
 ### Memory guard
 
@@ -962,19 +896,21 @@ COMPOSE_PROFILES=platform docker compose up -d && docker compose ps
 | File | Purpose |
 |---|---|
 | `docker-compose.infra.yml` | The 12 infrastructure/init containers, on `dokploy-network` |
+| `docker-compose.apps.yml` | The 29 .NET services, on `dokploy-network`, with both DNS alias forms |
 | `scripts/dokploy/generate-manifest.py` | Derives `build/dokploy/manifest.json` + one resolved env block per app from `docker-compose.yml` |
-| `scripts/dokploy/provision.py` | Creates/updates the Dokploy Applications over the API. Dry run by default |
+| `scripts/dokploy/provision.py` | Creates the preview-host Applications over the API. Dry run by default; `--inspect` and `--verify-only` show what Dokploy actually stored |
 | `scripts/dokploy/test_provision.py` | Offline checks for project/environment resolution and the existing-application lookup |
 | `scripts/dokploy/test_schema.py` | Offline checks for the OpenAPI-driven required-field handling. `--spec <file>` checks against a spec dumped from your own instance |
 | `scripts/dokploy/test_verify.py` | Offline checks for the read-back verifier, including the nixpacks and preview-alias-hijack regressions |
-| `scripts/dokploy/test_aliases.py` | Offline checks for the placeholder case-alias generation |
+| `scripts/dokploy/test_aliases.py` | Offline checks for the placeholder case-alias generation (`--case-aliases`, not the default path) |
+| `scripts/dokploy/test_entrypoint.sh` | Exercises `config/entrypoint.sh`: overlay rendering, case reconciliation, unset reporting, hard failures |
 | `build/dokploy/` | Generated, gitignored. The env blocks hold real secrets |
 
 ### Local
 
 | File | Purpose |
 |---|---|
-| `docker-compose.yml` | All-in-one stack: 12 infra/init containers + 29 services. Also the source of truth for configuration, which `generate-manifest.py` reads |
+| `docker-compose.yml` | All-in-one stack: 12 infra/init containers + 29 services. Also the source of truth for configuration — the two files above are generated from it, and `generate-manifest.py` reads it |
 
 ### Shared by both
 
