@@ -563,6 +563,13 @@ This is the only part that uses Dokploy **Applications**, because they are the o
 Dokploy gives previews to. Opt in per repo: each one costs up to `--preview-limit` containers plus a
 .NET SDK build on the same VM.
 
+Be aware before starting: on this Dokploy version the preview configuration cannot be scripted.
+`application.update` — which owns `isPreviewDeploymentsActive`, `previewEnv`, `previewPort`,
+`previewWildcard`, `command` and the Swarm network settings — accepts writes and persists none of
+them. So each preview host needs about ten fields set in the UI once, including a 170-line environment
+paste. It is once per repo and it covers every future PR on that repo, but it is not a one-command
+setup.
+
 ### Why a separate Application, and why it is never deployed
 
 A preview inherits its parent Application's `networkSwarm`, so if the parent carried the production DNS
@@ -597,19 +604,44 @@ Production is unaffected: it is the compose stack from Phase 8.
      --entrypoint-mode bind --preview-wildcard '*.preview.example.com' --apply
    ```
 
-4. **Finish it in the UI.** `provision.py` sets the GitHub provider, build type, environment and
-   preview settings — the calls that persist. It cannot set the entrypoint, because
-   `application.update` accepts `command`/`args` and stores nothing on this Dokploy version. So on the
-   `mavera-audit-pr` Application:
-   - **Advanced → Run Command**: `/bin/sh /entrypoint.sh`
-   - **Volumes/Mounts**: bind, host `/srv/mavera/entrypoint.sh` → container `/entrypoint.sh`
-   - Leave **Swarm Settings → Network** empty. No aliases is the point.
+4. **Finish it in the UI — this is most of the work, not a detail.**
 
-   Then confirm it stored:
+   `provision.py` sets what persists: the Application itself, the GitHub provider, the build type and
+   the (deliberately empty) Environment tab. Everything that configures a *preview* goes through
+   `application.update`, which accepts the call and stores nothing on this Dokploy version. The script
+   prints this checklist at the end of the run; it is reproduced here so you know what you are in for.
+
+   On the `mavera-audit-pr` Application:
+
+   | Where | Set |
+   |---|---|
+   | **Preview Deployments** | turn it **on** — without this no PR produces anything |
+   | | Limit `2`, Path `/` |
+   | | **Port `80`** — not the `3000` default, or the preview URL routes nowhere |
+   | | Wildcard `*.preview.example.com`, HTTPS on |
+   | **Preview Deployments → Environment** | paste all 170 lines of `build/dokploy/env/mavera-audit.env` |
+   | **Advanced → Run Command** | `/bin/sh /entrypoint.sh` |
+   | **Volumes/Mounts** | bind, host `/srv/mavera/entrypoint.sh` → container `/entrypoint.sh` |
+   | **Advanced → Swarm Settings → Network** | leave **empty** — no aliases is the point |
+
+   The environment paste is not optional and not a duplicate of the Environment tab: Dokploy replaces
+   `env` with `previewEnv` when it deploys a preview rather than merging them, so the Environment tab
+   is irrelevant here and an empty `previewEnv` means the preview sees no configuration at all —
+   every placeholder renders blank.
+
+   `--preview-wildcard` on the command line has no effect for the same reason. It is accepted and
+   discarded; set the wildcard in the UI.
+
+   Then confirm what actually stored:
 
    ```bash
    python scripts/dokploy/provision.py --only mavera-audit --role preview --inspect
+   python scripts/dokploy/provision.py --only mavera-audit --role preview --verify-only
    ```
+
+   `--verify-only` should come back clean. If it still reports `command`, `previewEnv` or
+   `isPreviewDeploymentsActive` as empty, the UI change did not save — fix that before opening a PR,
+   or you will be debugging a preview that was never configured.
 
 5. Add a wildcard DNS A record for `*.preview.example.com` → the Elastic IP. Omit
    `--preview-wildcard` and Dokploy falls back to `sslip.io`, which needs no DNS but gives out ugly

@@ -874,6 +874,93 @@ def inspect(client: Dokploy, application_id: str, name: str) -> None:
     print(f"    ---- {len(app)} fields returned; others: {', '.join(extra) or 'none'}")
 
 
+# Everything written through application.update, which accepts the call and
+# persists nothing on the Dokploy version this was built against. These have to
+# be set in the UI; provision.py prints the checklist rather than pretending.
+UPDATE_ONLY_FIELDS = [
+    "command", "args", "networkSwarm", "autoDeploy",
+    "isPreviewDeploymentsActive", "previewEnv", "previewLimit", "previewPort",
+    "previewPath", "previewHttps", "previewWildcard", "healthCheckSwarm",
+]
+
+
+def manual_steps(
+    specs: list[dict],
+    role: str,
+    env_dir,
+    entrypoint_mode: str,
+    entrypoint_host_path: str,
+    preview_limit: int,
+    preview_wildcard: str | None,
+) -> None:
+    """Print what still has to be done by hand, and why."""
+    print("\n" + "=" * 78)
+    print("STILL TO DO IN THE DOKPLOY UI")
+    print("=" * 78)
+    print(
+        "application.update accepts these fields and stores none of them on this\n"
+        "Dokploy, so the script cannot set them. Confirm afterwards with --inspect."
+    )
+
+    if role != "preview":
+        print(
+            "\nFor a production Application you would need Run Command and the\n"
+            "Swarm network aliases. That is why production runs as the\n"
+            "docker-compose.apps.yml stack instead -- see README 'Topology on Dokploy'."
+        )
+        return
+
+    for spec in specs:
+        name = f"{spec['name']}-pr"
+        env_file = env_dir / spec["envFile"]
+        print(f"\n--- {name} " + "-" * (70 - len(name)))
+        print("  1. Preview Deployments: turn it ON")
+        print(f"     Limit            {preview_limit}")
+        print(f"     Port             {spec['port']}   <- NOT the 3000 default; "
+              "the app listens on 80")
+        print("     Path             /")
+        if preview_wildcard:
+            print(f"     Wildcard         {preview_wildcard}")
+            print("     HTTPS            on")
+        else:
+            print("     Wildcard         leave blank to use Dokploy's sslip.io default")
+        print("  2. Preview Deployments -> Environment: paste the whole of")
+        print(f"     {env_file}")
+        print(f"     ({_line_count(env_file)} lines). A preview uses previewEnv "
+              "INSTEAD of the")
+        print("     Environment tab, not merged with it, so the Environment tab")
+        print("     being empty is correct and this paste is not optional.")
+        print("  3. Advanced -> Run Command")
+        if entrypoint_mode == "bind":
+            print(f"     /bin/sh {ENTRYPOINT_MOUNT_PATH}")
+            print("  4. Volumes/Mounts -> add a BIND mount")
+            print(f"     host       {entrypoint_host_path}")
+            print(f"     container  {ENTRYPOINT_MOUNT_PATH}")
+            print("     The host file must exist and be a file, not a directory.")
+        else:
+            print("     /bin/sh          (Command)")
+            print("     -c               (first argument)")
+            print(f"     ...the whole of config/entrypoint.sh as the second "
+                  "argument, which the UI makes painful. Prefer "
+                  "--entrypoint-mode bind here.")
+        print("  5. Advanced -> Swarm Settings -> Network: leave EMPTY.")
+        print("     No aliases is the point: a preview inherits its parent's and")
+        print("     would otherwise answer to a production DNS name.")
+
+    print("\nThen verify, and only then open a PR:")
+    only = " ".join(f"--only {s['name']}" for s in specs)
+    print(f"  python scripts/dokploy/provision.py --role preview {only} --inspect")
+    print(f"  python scripts/dokploy/provision.py --role preview {only} --verify-only")
+    print("=" * 78)
+
+
+def _line_count(path) -> int:
+    try:
+        return len(path.read_text(encoding="utf-8").strip().splitlines())
+    except OSError:
+        return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", default="build/dokploy/manifest.json")
@@ -1007,6 +1094,12 @@ def main() -> None:
 
     if args.apply:
         check_api(client)
+        if args.role == "preview" and args.preview_wildcard:
+            print(
+                "note: --preview-wildcard is written through application.update, "
+                "which does not persist here. Set the wildcard in the UI "
+                "(step 1 below)."
+            )
     elif not args.selftest:
         print("\nDRY RUN - no writes. Re-run with --apply once the calls look right.\n")
 
@@ -1135,16 +1228,23 @@ def main() -> None:
                     for p in problems:
                         print(f"    PROBLEM  {p}")
             if problem_count:
-                sys.exit(
-                    f"\n{problem_count} problem(s): the API accepted the calls but "
-                    "the state is not what the manifest says. Do NOT deploy yet - "
-                    "fix these first, then re-run."
+                print(
+                    f"\n{problem_count} problem(s): the API accepted the calls "
+                    "but the state is not what the manifest says. Expect the "
+                    "application.update fields below to be among them - they are "
+                    "the ones the UI has to set."
                 )
             print(f"  all {len(results)} verified")
 
         print("Nothing has been deployed yet - deploy from the Dokploy UI.")
+        manual_steps(specs, args.role, env_dir, args.entrypoint_mode,
+                     args.entrypoint_host_path, args.preview_limit,
+                     args.preview_wildcard)
     else:
         print(f"\n{len(results)} application(s) would be written.")
+        manual_steps(specs, args.role, env_dir, args.entrypoint_mode,
+                     args.entrypoint_host_path, args.preview_limit,
+                     args.preview_wildcard)
 
 
 if __name__ == "__main__":
