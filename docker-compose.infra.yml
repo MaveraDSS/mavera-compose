@@ -164,6 +164,9 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-mavera}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
+      # The admin's own vhost, and the fallback for any app stack that does not
+      # set RABBITMQ_VHOST. Per-project vhosts are created by rabbitmq-init:
+      # RABBITMQ_DEFAULT_VHOST only ever makes one, on the very first boot.
       RABBITMQ_DEFAULT_VHOST: "/"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
@@ -181,6 +184,32 @@ services:
           - rabbitmq
           # Hard-coded (not a placeholder) in 24 of the 29 appsettings.json files.
           - rabbitmq.rabbitmq.svc.cluster.local
+
+  # One vhost per project, so a project's services share a message namespace
+  # with each other and with nobody else. Optionally a per-vhost user too, which
+  # turns that boundary from a convention into something the broker enforces.
+  # Driven by RABBITMQ_VHOSTS; see config/rabbitmq-init.sh for the entry format.
+  #
+  # curl, not the rabbitmq image: rabbitmqctl would need the broker's Erlang
+  # cookie and a pinned node name. The script explains why that is a trap.
+  #
+  # App stacks in other Dokploy projects cannot `depends_on` this -- Compose
+  # cannot wait on a service in another project -- so a project deployed before
+  # its vhost exists crash-loops on ACCESS_REFUSED until this has run. Same
+  # ordering rule as mongo-init: deploy infra first, let it settle.
+  rabbitmq-init:
+    image: curlimages/curl:8.11.1
+    restart: "no"
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    environment:
+      RABBITMQ_USER: ${RABBITMQ_USER:-mavera}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
+      RABBITMQ_VHOSTS: ${RABBITMQ_VHOSTS:-}
+    volumes:
+      - ./config/rabbitmq-init.sh:/rabbitmq-init.sh:ro
+    entrypoint: ["/bin/sh", "/rabbitmq-init.sh"]
+    networks: [dokploy-network]
 
   mongo:
     image: mongo:7

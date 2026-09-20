@@ -75,9 +75,17 @@ x-placeholders: &placeholders
   ConnectionStrings_DB_Mongo_EnhancedPatientView: enhanced-patient-view
 
   # --- RabbitMQ (host is hard-coded in the templates; see the alias on the broker) ---
+  # One broker, one vhost per project: set RABBITMQ_VHOST to this project's and
+  # its services get a message namespace nothing outside the project can see.
+  # The vhost must already exist -- rabbitmq-init in the infra stack creates it
+  # from RABBITMQ_VHOSTS, and the broker will not create one on connect.
+  #
+  # For an enforced boundary rather than a convention, give the project the
+  # per-vhost user rabbitmq-init made for it (the `name:user:password` entry
+  # form) instead of the shared admin account.
   MessageBroker_Username: ${RABBITMQ_USER:-mavera}
   MessageBroker_Password: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
-  MessageBroker_VirtualHost: "/"
+  MessageBroker_VirtualHost: ${RABBITMQ_VHOST:-/}
 
   # --- Redis ---
   RedisInstance: redis

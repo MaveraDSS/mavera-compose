@@ -172,6 +172,8 @@ Paste the contents of `.env.example` into the **Environment** tab and fill in th
 | `DB_PASS` | strong password | **must not contain `$`** — config is rendered with `envsubst` |
 | `MONGO_ROOT_PASS`, `MONGO_PASS` | strong passwords | same `$` rule |
 | `RABBITMQ_PASS`, `MINIO_PASS`, `SEQ_ADMIN_PASS` | strong passwords | same `$` rule |
+| `RABBITMQ_VHOSTS` | *(blank, or a vhost list)* | **infra stack only.** One virtual host per project, so each project's services get a message namespace of their own. See README *Per-project RabbitMQ vhosts*. |
+| `RABBITMQ_VHOST` | *(blank, or one of the above)* | **app stack only.** Which vhost these 29 services use. Blank means `/`, the previous behaviour. |
 | `OKTA_DOMAIN`, `OKTA_AUTH_SERVER_ID` | your Okta org + auth server | see *Okta is now required* below |
 | `OKTA_INTERNAL_CLIENT_ID`, `OKTA_INTERNAL_SECRET` | Okta app credentials | the client-credentials pair for the `internalapi` scope |
 | `INTERNAL_SERVICES_SECRET` | shared secret | still read by the three repos on `BRANCH_FALLBACK` |
@@ -227,8 +229,9 @@ docker compose config >/dev/null && echo "interpolation OK"
 ```
 
 Only the ~15 infrastructure knobs are actually read by `docker-compose.infra.yml` (`DB_PASS`, the
-`MONGO_*`, `RABBITMQ_*` and `MINIO_*` pairs, `BUCKET_ASSETS`, `BUCKET_DOCUMENTS`, `SEQ_ADMIN_PASS`,
-`MSSQL_MEMORY_LIMIT_MB`, `SQL_RESTORE_ENABLED`, `SQL_RESTORE_FORCE`, `SQLSERVER_IMAGE`). Paste the whole
+`MONGO_*`, `RABBITMQ_*` and `MINIO_*` pairs, `RABBITMQ_VHOSTS`, `BUCKET_ASSETS`, `BUCKET_DOCUMENTS`,
+`SEQ_ADMIN_PASS`, `MSSQL_MEMORY_LIMIT_MB`, `SQL_RESTORE_ENABLED`, `SQL_RESTORE_FORCE`,
+`SQLSERVER_IMAGE`). Paste the whole
 file anyway: `generate-manifest.py` reads the same `.env` in Phase 8c to resolve the 169 placeholders,
 and keeping one copy is what stops the two halves drifting.
 

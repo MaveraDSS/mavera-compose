@@ -89,9 +89,13 @@ x-placeholders: &placeholders
   ConnectionStrings_DB_Mongo_EnhancedPatientView: enhanced-patient-view
 
   # --- RabbitMQ (host is hard-coded in the templates; see the alias on the broker) ---
+  # One broker, one vhost per project. `rabbitmq-init` creates the vhosts listed
+  # in RABBITMQ_VHOSTS; RABBITMQ_VHOST picks the one these services use. The
+  # broker does not create a vhost on connect, so an unlisted name means
+  # ACCESS_REFUSED, not an empty namespace.
   MessageBroker_Username: ${RABBITMQ_USER:-mavera}
   MessageBroker_Password: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
-  MessageBroker_VirtualHost: "/"
+  MessageBroker_VirtualHost: ${RABBITMQ_VHOST:-/}
 
   # --- Redis ---
   RedisInstance: redis
@@ -285,7 +289,9 @@ x-dep-mongo: &dep-mongo
 x-dep-minio: &dep-minio
   minio-init: { condition: service_completed_successfully }
 x-dep-rabbit: &dep-rabbit
-  rabbitmq: { condition: service_healthy }
+  # Waits on the init, not the broker: a service that connects before its vhost
+  # exists gets ACCESS_REFUSED, and rabbitmq-init already waits for health.
+  rabbitmq-init: { condition: service_completed_successfully }
 x-dep-redis: &dep-redis
   redis: { condition: service_healthy }
 
@@ -440,6 +446,9 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-mavera}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
+      # The admin's own vhost, and the fallback for anything that does not set
+      # RABBITMQ_VHOST. Per-project vhosts come from rabbitmq-init:
+      # RABBITMQ_DEFAULT_VHOST only ever makes one, on the very first boot.
       RABBITMQ_DEFAULT_VHOST: "/"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
@@ -454,6 +463,27 @@ services:
         aliases:
           # Hard-coded (not a placeholder) in 24 of the 29 appsettings.json files.
           - rabbitmq.rabbitmq.svc.cluster.local
+
+  # One vhost per project, so a project's services share a message namespace
+  # with each other and with nobody else. Optionally a per-vhost user too, which
+  # turns that boundary from a convention into something the broker enforces.
+  # Driven by RABBITMQ_VHOSTS; see config/rabbitmq-init.sh for the entry format.
+  #
+  # curl, not the rabbitmq image: rabbitmqctl would need the broker's Erlang
+  # cookie and a pinned node name. The script explains why that is a trap.
+  rabbitmq-init:
+    image: curlimages/curl:8.11.1
+    restart: "no"
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    environment:
+      RABBITMQ_USER: ${RABBITMQ_USER:-mavera}
+      RABBITMQ_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is not set}
+      RABBITMQ_VHOSTS: ${RABBITMQ_VHOSTS:-}
+    volumes:
+      - ./config/rabbitmq-init.sh:/rabbitmq-init.sh:ro
+    entrypoint: ["/bin/sh", "/rabbitmq-init.sh"]
+    networks: [mavera]
 
   mongo:
     image: mongo:7

@@ -106,6 +106,46 @@ Two Dokploy settings on both compose services are load-bearing:
   `<appName>_sqlserver`, which breaks plain-name DNS (and Swarm has no `build`).
 - **Isolated Deployments off.** It moves a stack onto a private network and *off* `dokploy-network`.
 
+### Per-project RabbitMQ vhosts
+
+A Dokploy *project* is a folder in the UI, not a boundary: every stack on the server shares
+`dokploy-network`, so `rabbitmq` resolves to the same broker from every project. Deploying a second
+broker does not separate them either — both would register the alias `rabbitmq` on that one network and
+Docker's DNS would round-robin between them.
+
+The boundary that does exist is RabbitMQ's own. A **virtual host** is a complete namespace: exchanges,
+queues, bindings and messages inside one are invisible from another, on a single broker process. One
+vhost per project gives each project's services a bus they share only with each other.
+
+`rabbitmq-init` in the infra stack creates them from `RABBITMQ_VHOSTS`, a comma-separated list with two
+entry shapes:
+
+| entry | who may use the vhost | boundary |
+|---|---|---|
+| `name` | the shared `RABBITMQ_USER` | conventional — anything holding the admin password can point at any vhost |
+| `name:user:password` | a user with rights on *that* vhost and no management tag | enforced — the broker refuses it anywhere else |
+
+```bash
+# infra stack
+RABBITMQ_VHOSTS=mavera-prod:mavera-prod:prod_pw,mavera-staging:mavera-staging:staging_pw
+
+# each app stack picks one, with the matching credentials
+RABBITMQ_VHOST=mavera-prod
+RABBITMQ_USER=mavera-prod
+RABBITMQ_PASS=prod_pw
+```
+
+`MessageBroker_VirtualHost` is already a placeholder in all 29 `appsettings.json` templates, so this
+needs no change in any service repo. Two things to know:
+
+- **The vhost must exist before the services connect.** RabbitMQ does not create one on demand, so a
+  name that `rabbitmq-init` never made gives every service `ACCESS_REFUSED`, not an empty namespace.
+  App stacks are in another Compose project and cannot `depends_on` it — deploy infra first and let it
+  settle, the same rule that already applies to `mssql-init` and `mongo-init`.
+- **It isolates messaging only.** SQL Server catalogs, Mongo databases, Redis keys and the
+  `<svc>.svc.cluster.local` aliases are still shared server-wide, so two app stacks on one host still
+  collide everywhere else. For a genuinely separate environment, use a separate Dokploy server.
+
 ### Previews
 
 A preview Application is added per repo, and it is **only** a preview host — it is never deployed
