@@ -214,8 +214,12 @@ public static class Commands
             foreach (var child in children)
             {
                 var spec = child.Spec;
-                var result = await Health.WaitAsync(spec.HealthUrl, spec.Port, spec.StartTimeout, () => !child.HasExited, acceptClientErrors: spec.EdgeHealthUrl is null, cts.Token);
+                var result = await Health.WaitAsync(spec.HealthUrl, spec.Port, spec.StartTimeout, () => !child.HasExited, acceptClientErrors: spec.EdgeHealthUrl is null, cts.Token, spec.Tolerated);
                 Console.WriteLine($"  {spec.Name}: {spec.HealthUrl ?? $"port {spec.Port}"} -> {result.Detail}");
+                if (result.IsDegraded)
+                {
+                    Console.WriteLine($"  warning ({spec.Name}): runs degraded; health check(s) {string.Join(", ", result.Degraded!)} fail because their secrets are blank, everything else works");
+                }
                 healthy &= result.Ok;
                 if (result.Ok && spec.EdgeHealthUrl is not null)
                 {
@@ -456,10 +460,16 @@ public static class Commands
             foreach (var p in state.Processes)
             {
                 var alive = ProcessRunner.IsAlive(p.Pid);
+                if (p.Tolerated.Count == 0 && ws.Manifest.FindService(p.Name) is { } spec)
+                {
+                    // State written by an older devenv has no tolerated list; decide from today's manifest and secrets.
+                    p.Tolerated = spec.ToleratedHealthChecks(ws.Secrets);
+                }
                 var health = alive ? await Health.ProbeAsync(p) : new HealthResult(false, "process gone");
                 report.Processes.Add(new ProcessStatus
                 {
                     Name = p.Name, Pid = p.Pid, Port = p.Port, Alive = alive, Healthy = health.Ok, Detail = health.Detail, HealthUrl = p.HealthUrl, LogFile = p.LogFile,
+                    Degraded = health.Degraded?.ToList() ?? new List<string>(),
                 });
                 ok &= alive && health.Ok;
             }
@@ -538,7 +548,8 @@ public static class Commands
                 s.Port,
                 s.HealthPath is null ? null : $"http://localhost:{s.Port}{s.HealthPath}",
                 null,
-                TimeSpan.FromMinutes(5)));
+                TimeSpan.FromMinutes(5),
+                s.ToleratedHealthChecks(ws.Secrets)));
         }
 
         specs.Add(new ProcessSpec(
@@ -593,6 +604,7 @@ public static class Commands
                 Port = c.Spec.Port,
                 HealthUrl = c.Spec.HealthUrl,
                 LogFile = c.LogFile,
+                Tolerated = c.Spec.Tolerated is null ? new Dictionary<string, string>() : new Dictionary<string, string>(c.Spec.Tolerated),
             }).ToList(),
         };
         File.WriteAllText(ws.StateFile, JsonSerializer.Serialize(state, Json.Options));

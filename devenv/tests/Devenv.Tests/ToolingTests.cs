@@ -124,6 +124,7 @@ public class ToolingTests : IDisposable
         Assert.True(root.GetProperty("ok").GetBoolean());
         Assert.Equal("libertine", root.GetProperty("processes")[0].GetProperty("name").GetString());
         Assert.True(root.GetProperty("processes")[0].GetProperty("healthy").GetBoolean());
+        Assert.Equal(0, root.GetProperty("processes")[0].GetProperty("degraded").GetArrayLength());
         Assert.False(root.GetProperty("testing").GetProperty("configured").GetBoolean());
     }
 

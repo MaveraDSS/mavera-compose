@@ -114,7 +114,7 @@ If your repos are not next to mavera-compose, or you are not on dev02, copy `dev
 | `check` | Tools, repos, packages, secrets file, dev02 reachable (Zscaler), ports free. No changes. |
 | `render` | Writes libertine's `appsettings.Development.json`, the frontend `.env`, and the config of every `--local` service. `--dry-run` prints instead. |
 | `up` | `check` + `render`, starts docker infra, then the processes; waits until each answers; Ctrl+C stops the processes. `-d` leaves them running in the background and returns. |
-| `status` | Each process with pid, port and health; infra containers. `--json` prints one object for tools. |
+| `status` | Each process with pid, port and health (`degraded: ...` when a tolerated check fails, see *Running a backend service locally*); infra containers. `--json` prints one object for tools. |
 | `logs <name>` | The end of a process log (`--tail 100`), same on Mac and Windows. Names as in `status`, or `devenv` for the supervisor. |
 | `token` | A bearer token for API checks: password grant with `TEST_USER`/`TEST_PASSWORD` from `secrets.json`, through local libertine when it runs. Prints only the token, so `T=$(devenv token)` works. |
 | `down` | Stops everything `up` started, including the docker infra. |
@@ -155,6 +155,15 @@ Services that can run locally today (have a `project` in the manifest): evaluati
 document-service, medical-advisor-network, caregivers, integration. notification-service is listed but
 blocked (sends real mail) until DSS-5587. Anything else needs its `project` path filled in first.
 
+**Degraded, not broken.** A service's `/health` aggregates checks on its dependencies. When a dependency was
+never configured on your machine, the check fails although the service itself works; the manifest lists such
+checks under `optionalHealthChecks` with the secrets that switch them on. Today: document-service's `s3` while
+the `S3_*` keys in `secrets.json` are blank (DSS-5604). `up` then prints a `warning (document-service): runs
+degraded ...` line, `status` shows `HTTP 503, degraded: s3 (...)` with `healthy: true` and the entry names in
+`degraded`, and the run counts as ok. Documents cannot be opened or uploaded through that local service until
+the keys are filled; everything else works. A failing check that is not optional, or whose secrets are set, still
+fails `up` and `status`.
+
 Run the frontend flows that hit the service; the service log is in `.state/logs/<name>.log`.
 
 ## Claude Code
@@ -170,7 +179,7 @@ claude plugin install dss@mavera
 | Command | What it does |
 |---|---|
 | `/dss:dev-env DSS-1234` | Reads the ticket, proposes the services to run locally with a reason each, and after your yes runs `devenv up -d --local ...`. |
-| `/dss:verify DSS-1234` | Checks the running stack against the ticket's "how to test": API calls through libertine with `devenv token`, and Claude driving Chrome (you log in once). Evidence lands in `.state/evidence/<ticket>/`. |
+| `/dss:verify DSS-1234` | Checks the stack against the ticket's "how to test" (starting it first, after your yes, when it is down): API calls through libertine with `devenv token`, and Claude driving Chrome (you log in once). Evidence lands in `.state/evidence/<ticket>/`. |
 | `/dss:ticket DSS-1234` | The whole loop: understand, start the stack, branch per repo convention, plan, implement after your yes, unit tests, restart the service, verify, commit. No push or PR unless asked. |
 
 Open Claude Code in the **repos root** (the folder holding mavera-compose and the other repos side by side),
@@ -234,6 +243,10 @@ devenv/
 - Login accepts the email code and then fails — `OKTA_CLIENT_SECRET` in `secrets.json` is wrong or blank;
   the real error is in `.state/logs/frontend.log`. Restart after fixing (`down`, `up`).
 - Libertine's first proxied request after start can time out once; devenv retries, browsers just reload.
+- `document-service ... HTTP 503, degraded: s3 (...)` — expected while the `S3_*` keys in `secrets.json` are
+  blank; the service serves everything except document content. Fill the keys (DSS-5604) and restart to clear
+  it. Each health probe takes up to 30 s in this state because the AWS SDK looks for credentials first, so
+  `status` is slow for that one process.
 - `refusing to start ...: it would change the shared dev02 database schema` — your branch carries
   migration scripts dev02 has not applied. Rebase, or decide consciously with `--allow-migrations`.
 - Two `403` responses from `/Vera/MedicalAdvisorNetwork/...` on the case page are a dev02 build issue,

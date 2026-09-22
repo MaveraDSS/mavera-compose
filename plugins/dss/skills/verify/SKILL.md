@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Verify a change against the running DSS local stack (devenv) - API calls through local libertine and a browser pass with Chrome DevTools - and write evidence for a ticket. Use after a change, before committing or reviewing.
+description: Verify a change against the DSS local stack (devenv), starting it after confirmation when it is down - API calls through local libertine and a browser pass with Chrome DevTools - and write evidence for a ticket. Use after a change, before committing or reviewing.
 disable-model-invocation: true
 arguments: [ticket]
 ---
@@ -22,11 +22,19 @@ Read `${CLAUDE_PLUGIN_ROOT}/reference/devenv.md` and `${CLAUDE_PLUGIN_ROOT}/refe
   sentence and derive the checks from that.
 - Show the check list and let the developer trim it before you run anything.
 
-## 2. Confirm the stack
+## 2. Confirm or start the stack
 
-`status --json`. Every process must be `alive` and `healthy`; the local services listed must include the ones the
-ticket changed, on the expected branch. If not, stop and say what to start (`/dss:dev-env`); do not start it
-yourself from this skill.
+`status --json`. Every process must be `alive` and `healthy` (a non-empty `degraded` with `healthy: true` is
+fine; say what it means, from `detail`); the local services listed must include the ones the ticket changed,
+on the expected branch.
+
+- Nothing runs: follow `/dss:dev-env` steps 3 to 5 (`${CLAUDE_PLUGIN_ROOT}/skills/dev-env/SKILL.md`) with the
+  context you already have: propose the `--local` list with reasons, wait for the yes, `up -d --local <list>`.
+  Do not skip the yes; the developer may have a stack in mind.
+- The wrong set runs (a changed service is missing, or on the wrong branch): say so, propose the corrected
+  `down` + `up -d --local <list>` (or a `git -C <repo> checkout`), wait for the yes, then do it.
+- Something is `alive` but not `healthy`: read `logs <name> --tail 100`, report the cause, and stop; a
+  half-running stack gives false failures.
 
 ## 3. API tier
 

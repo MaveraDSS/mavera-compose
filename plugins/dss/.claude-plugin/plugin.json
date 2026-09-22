@@ -1,7 +1,7 @@
 {
   "name": "dss",
   "description": "Mavera DSS local development with devenv: map a Jira ticket to the services to run locally, verify a fix against the running stack, or work a ticket end to end.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": {
     "name": "Mavera DSS"
   },

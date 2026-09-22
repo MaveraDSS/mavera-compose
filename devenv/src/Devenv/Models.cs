@@ -147,9 +147,39 @@ public sealed class ServiceSpec
     public bool RequiresX64 { get; set; }
     /// <summary>Placeholder values that apply to this service only, on top of manifest placeholders.local.</summary>
     public Dictionary<string, string> Placeholders { get; set; } = new();
+    /// <summary>
+    /// Health-check entries (names from the service's `/health` JSON) that may fail without failing `up` or `status`,
+    /// as long as at least one of the listed secrets is blank. Blank means the developer never configured that
+    /// dependency (e.g. S3 for document-service), so the service is degraded, not broken.
+    /// </summary>
+    public Dictionary<string, OptionalHealthCheck> OptionalHealthChecks { get; set; } = new();
     public string? Notes { get; set; }
 
     public string ProjectDir => Project is null ? "" : (Path.GetDirectoryName(Project) ?? "");
+
+    /// <summary>The health entries tolerated for this run (name → note): those whose secrets are blank in secrets.json.</summary>
+    public Dictionary<string, string> ToleratedHealthChecks(IReadOnlyDictionary<string, string> secrets)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (name, check) in OptionalHealthChecks)
+        {
+            var blank = check.Secrets.Where(k => !secrets.TryGetValue(k, out var v) || string.IsNullOrWhiteSpace(v)).ToList();
+            if (check.Secrets.Count == 0 || blank.Count > 0)
+            {
+                var why = blank.Count > 0 ? $"{string.Join(", ", blank)} blank in secrets.json" : "optional";
+                result[name] = check.Note is { Length: > 0 } ? $"{why}: {check.Note}" : why;
+            }
+        }
+        return result;
+    }
+}
+
+public sealed class OptionalHealthCheck
+{
+    /// <summary>secrets.json keys; the check is tolerated while any of them is blank. Empty: always tolerated.</summary>
+    public List<string> Secrets { get; set; } = new();
+    /// <summary>What does not work while the check fails; shown next to "degraded" in `up` and `status`.</summary>
+    public string? Note { get; set; }
 }
 
 /// <summary>How $Placeholder tokens in the services' committed appsettings.json templates get their values.</summary>
@@ -256,4 +286,6 @@ public sealed class RunningProcess
     public int Port { get; set; }
     public string? HealthUrl { get; set; }
     public string LogFile { get; set; } = "";
+    /// <summary>Health entries tolerated for this run (name → note), decided at `up` from the blank secrets.</summary>
+    public Dictionary<string, string> Tolerated { get; set; } = new();
 }

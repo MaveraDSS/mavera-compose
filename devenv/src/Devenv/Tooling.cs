@@ -49,6 +49,8 @@ public sealed class ProcessStatus
     public int Port { get; set; }
     public bool Alive { get; set; }
     public bool Healthy { get; set; }
+    /// <summary>Health-check entries that fail but are tolerated (their secrets are blank); `detail` carries the note. Healthy stays true.</summary>
+    public List<string> Degraded { get; set; } = new();
     public string Detail { get; set; } = "";
     public string? HealthUrl { get; set; }
     public string LogFile { get; set; } = "";

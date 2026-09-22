@@ -12,7 +12,9 @@ public sealed record ProcessSpec(
     string? HealthUrl,
     /// <summary>Second URL checked after HealthUrl; retried once because libertine's first proxied request can 504.</summary>
     string? EdgeHealthUrl,
-    TimeSpan StartTimeout);
+    TimeSpan StartTimeout,
+    /// <summary>Health entries (name → note) that may fail without failing the start; see ServiceSpec.OptionalHealthChecks.</summary>
+    IReadOnlyDictionary<string, string>? Tolerated = null);
 
 /// <summary>A child process with its output prefixed and mirrored to a log file.</summary>
 public sealed class ChildProcess : IDisposable

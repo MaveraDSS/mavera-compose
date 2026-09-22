@@ -30,7 +30,7 @@ The repos root (parent of mavera-compose) is where devenv expects every other re
 
 | Purpose | Command | Notes |
 |---|---|---|
-| What runs | `status --json` | One object: `processes[]` with `alive`/`healthy`, `infra`, `localServices[]` with `branch`, `testing` (test organisation), `ok`. Exit 1 when nothing runs or something is unhealthy. |
+| What runs | `status --json` | One object: `processes[]` with `alive`/`healthy`/`degraded[]`/`detail`, `infra`, `localServices[]` with `branch`, `testing` (test organisation), `ok`. Exit 1 when nothing runs or something is unhealthy. A process with `healthy: true` and a non-empty `degraded` (today: document-service `s3` while the S3 secrets are blank) is usable; `detail` says what does not work. Mention it, do not treat it as a failure. |
 | Start | `up -d --local a,b` | Clones missing repos, preflight, render, guards, docker infra, processes, health waits. Returns when everything answers, or exits 1 with the failing line. `--no-infra` when no `--local`. |
 | Stop | `down` | Also stops the docker infra. |
 | Restart one changed service | `down` then `up -d --local ...` | Services are `dotnet run`, no hot reload. The frontend hot-reloads on its own. |
