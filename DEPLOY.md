@@ -174,6 +174,12 @@ Paste the contents of `.env.example` into the **Environment** tab and fill in th
 | `RABBITMQ_PASS`, `MINIO_PASS`, `SEQ_ADMIN_PASS` | strong passwords | same `$` rule |
 | `RABBITMQ_VHOSTS` | *(blank, or a vhost list)* | **infra stack only.** One virtual host per project, so each project's services get a message namespace of their own. See README *Per-project RabbitMQ vhosts*. |
 | `RABBITMQ_VHOST` | *(blank, or one of the above)* | **app stack only.** Which vhost these 29 services use. Blank means `/`, the previous behaviour. |
+| `SQL_PROJECTS` | *(blank, or a project list)* | **infra stack only.** One set of the seven catalogs per project, plus a login scoped to that set. See README *Per-project SQL Server catalogs*. |
+| `MONGO_PROJECTS` | *(blank, or a project list)* | **infra stack only.** One set of the eleven Mongo databases per project, plus a user scoped to that set. Same prefix as `SQL_PROJECTS`. |
+| `SQL_CROSSDB_STRICT` | `false` | **infra stack only.** `true` fails the deploy on an `[xdb]` finding — a 3-part reference a prefixed restore cannot repoint. |
+| `SQL_DEFAULT_CATALOGS` | `true` | **infra stack only.** `false` skips the unprefixed set, saving ~450 MB on a server where every project is prefixed. |
+| `DB_PREFIX` | *(blank, or one of the above)* | **app stack only.** Which project's SQL catalogs *and* Mongo databases these 29 services use. Blank means the unprefixed set, the previous behaviour. |
+| `REDIS_HOST` | *(blank, or `<prefix>redis`)* | **app stack only.** Blank means the shared `redis` in the infra stack. Anything else needs `project-redis` in `COMPOSE_PROFILES`. |
 | `OKTA_DOMAIN`, `OKTA_AUTH_SERVER_ID` | your Okta org + auth server | see *Okta is now required* below |
 | `OKTA_INTERNAL_CLIENT_ID`, `OKTA_INTERNAL_SECRET` | Okta app credentials | the client-credentials pair for the `internalapi` scope |
 | `INTERNAL_SERVICES_SECRET` | shared secret | still read by the three repos on `BRANCH_FALLBACK` |
@@ -229,7 +235,8 @@ docker compose config >/dev/null && echo "interpolation OK"
 ```
 
 Only the ~15 infrastructure knobs are actually read by `docker-compose.infra.yml` (`DB_PASS`, the
-`MONGO_*`, `RABBITMQ_*` and `MINIO_*` pairs, `RABBITMQ_VHOSTS`, `BUCKET_ASSETS`, `BUCKET_DOCUMENTS`,
+`MONGO_*`, `RABBITMQ_*` and `MINIO_*` pairs, `RABBITMQ_VHOSTS`, `SQL_PROJECTS`, `MONGO_PROJECTS`,
+`SQL_CROSSDB_STRICT`, `SQL_DEFAULT_CATALOGS`, `BUCKET_ASSETS`, `BUCKET_DOCUMENTS`,
 `SEQ_ADMIN_PASS`, `MSSQL_MEMORY_LIMIT_MB`, `SQL_RESTORE_ENABLED`, `SQL_RESTORE_FORCE`,
 `SQLSERVER_IMAGE`). Paste the whole
 file anyway: `generate-manifest.py` reads the same `.env` in Phase 8c to resolve the 169 placeholders,
@@ -459,6 +466,11 @@ with all seven: services start and EF migrations run, and only queries for seede
 add the backup later, the restore picks it up — an empty database (no user tables) counts as
 restorable, so the shell created on an earlier deploy does not block it.
 
+**With more than one project.** `mssql-init` then does the whole of the above once per `SQL_PROJECTS`
+entry, restoring the same backups under each project's prefix and creating a login scoped to that set;
+see README *Per-project SQL Server catalogs*. Budget ~450 MB of disk per project, and note that
+`SQL_RESTORE_FORCE=true` re-restores *every* project's copy in one deploy.
+
 ### Refreshing the data from a newer backup
 
 Replace `Databases.zip`, push, then set `SQL_RESTORE_FORCE=true` for one deploy and set it back to
@@ -466,7 +478,9 @@ Replace `Databases.zip`, push, then set `SQL_RESTORE_FORCE=true` for one deploy 
 discarding anything written since.
 
 Backups from SQL Server 2019 restore cleanly onto this 2022 image. Keep the original database names,
-so any 3-part reference inside the data (views, procs, synonyms) keeps resolving.
+so any 3-part reference inside the data (views, procs, synonyms) keeps resolving. `DB_PREFIX` does
+rename them, per project — the restore audits for exactly those references afterwards and prints an
+`[xdb]` line per hit, which `SQL_CROSSDB_STRICT=true` turns into a failed deploy.
 
 ### If a restore fails
 
@@ -522,6 +536,10 @@ first deploy fails. Set `COMPOSE_PROFILES`, press Deploy, wait for it to settle,
 | 2 | `platform,evaluation` | +3 | evaluation service, EPV, fkassan |
 | 3 | `platform,evaluation,documents` | +5 | document/storage/OCR/PDF/file-conversion |
 | 4 | `all` | 29 | adds the 8 AI orchestrators |
+
+If this project has its own Redis (`REDIS_HOST` set — see README *Per-project Redis*), append
+`,project-redis` to every value above. It is its own profile precisely so that a stack which does not
+use it is unchanged, which also means `all` alone will not start it.
 
 **The first build is long.** Five .NET SDK majors (6.0, 7.0, 8.0, 9.0, 10.0) across alpine *and* Debian
 variants get pulled, and 29 projects compile. Budget an hour or more for step 1, then much less —
@@ -767,6 +785,58 @@ curl -s -o /dev/null -w '%{http_code}\n' https://mavera.example.com/libertine/ca
 ```
 
 If you have preview hosts, add the no-hijack check from Phase 8.5 while a preview is running.
+
+### If you run more than one project
+
+With `SQL_PROJECTS` / `MONGO_PROJECTS` set, the boundary is the credential, not the network — every
+stack still resolves `sqlserver` and `mongo`. So test it by trying to cross it. With two projects
+`alpha-` and `beta-`, and `S` a shortcut for `docker compose -f docker-compose.infra.yml exec -T
+sqlserver /opt/mssql-tools18/bin/sqlcmd -C -S localhost`:
+
+```bash
+# the init logs print the exact DB_PREFIX= line for each project -- paste it, do not retype it
+(cd $INFRA && docker compose -f docker-compose.infra.yml logs mssql-init mongo-init) \
+  | grep -E 'DB_PREFIX=|\[xdb\]|\[orph\]|\[warn\]|complete'
+
+# alpha can run DDL in its own catalog (this is the EF-migration test) -- expect exit 0
+$S -U alpha_app -P 'Alpha_Pw_1' -d 'alpha-vera-dev02' -b -Q \
+  "CREATE TABLE dbo._probe(id int); DROP TABLE dbo._probe;"
+
+# ... and cannot cross into beta's, by either route. Expect Msg 4060 then Msg 916.
+$S -U alpha_app -P 'Alpha_Pw_1' -d 'beta-vera-dev02'  -b -Q "SELECT TOP 1 1;"
+$S -U alpha_app -P 'Alpha_Pw_1' -d 'alpha-vera-dev02' -b -Q \
+  "SELECT TOP 1 * FROM [beta-vera-dev02].sys.tables;"
+
+# ... cannot even enumerate it: expect master, tempdb and alpha-'s seven, nothing else
+$S -U alpha_app -P 'Alpha_Pw_1' -d 'alpha-vera-dev02' -h -1 -W -Q \
+  "SET NOCOUNT ON; SELECT name FROM sys.databases;"
+
+# ... and cannot escalate. Expect Msg 262, and zero rows from the role query.
+$S -U alpha_app -P 'Alpha_Pw_1' -b -Q "CREATE DATABASE [alpha_escape];"
+$S -U sa -P "$DB_PASS" -h -1 -W -Q "SET NOCOUNT ON;
+  SELECT r.name FROM sys.server_role_members m
+    JOIN sys.server_principals r ON r.principal_id = m.role_principal_id
+    JOIN sys.server_principals p ON p.principal_id = m.member_principal_id
+   WHERE p.name = N'alpha_app';"
+
+# Mongo, through the connection string the services actually get -- which also
+# proves the authSource=admin assumption end to end.
+M() { docker run --rm --network dokploy-network mongo:7 mongosh \
+  "mongodb://$1:$2@mongo:27017/?directConnection=true&tls=false&authMechanism=SCRAM-SHA-256" \
+  --quiet --eval "$3"; }
+M alpha_mongo Alpha_Mg_1 'db.adminCommand({listDatabases:1,nameOnly:true}).databases.map(d=>d.name).sort()'
+# -> exactly 11 names, all starting alpha-. No beta-, no admin, no unprefixed.
+M alpha_mongo Alpha_Mg_1 'try{db.getSiblingDB("beta-fkassan").x.insertOne({t:1});print("LEAK")}catch(e){print("DENIED "+e.codeName)}'
+M alpha_mongo Alpha_Mg_1 'printjson(db.runCommand({connectionStatus:1}).authInfo.authenticatedUserRoles)'
+# -> DENIED Unauthorized, then 11 readWrite entries and nothing else
+
+# Redis: the failure mode is a shared alias round-robining, so test by repetition.
+docker run --rm --network dokploy-network redis:7-alpine sh -c \
+  'for i in $(seq 1 10); do redis-cli -h alpha-redis config get appendonly >/dev/null && echo ok; done' \
+  | sort -u                                   # -> one line, and nslookup gives one address
+docker run --rm --network dokploy-network busybox nslookup alpha-redis
+docker volume ls | grep project-redis-data    # one per stack, distinct appName prefixes
+```
 
 Logs for all services land in **Seq** — add a Dokploy domain for the `seq` service (port 80) and log in
 as `admin` with `SEQ_ADMIN_PASS`.

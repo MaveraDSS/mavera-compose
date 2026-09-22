@@ -16,6 +16,20 @@
 
    Safe to run on every `docker compose up`: existing databases are never
    touched, and nothing here drops, replaces or alters anything.
+
+   PER-PROJECT CATALOGS. Every name below is prefixed with $(prefix), a sqlcmd
+   variable the caller passes with -v. mssql-init runs this once with an empty
+   prefix (the pre-existing single-project set) and mssql-projects.sh runs it
+   again per entry in SQL_PROJECTS, so one Dokploy project's catalogs are a
+   complete set of its own.
+
+   There is deliberately NO `:setvar prefix ""` default in this file. sqlcmd
+   resolves :setvar ABOVE -v, so a default here would silently override every
+   per-project invocation and quietly collapse all of them onto one set.
+   Callers always pass -v prefix=..., possibly empty.
+
+   Any further .sql dropped into this directory gets the same treatment, so a
+   `10-foo.sql` written against $(prefix) becomes per-project for free.
    =========================================================================== */
 
 SET NOCOUNT ON;
@@ -32,10 +46,10 @@ SET XACT_ABORT ON;
 DECLARE @owned TABLE (Ordinal int IDENTITY(1,1), DatabaseName sysname NOT NULL PRIMARY KEY);
 
 INSERT INTO @owned (DatabaseName) VALUES
-    (N'MaveraInboxOutbox'),        -- $ConnectionStrings_DB_InboxOutbox
-    (N'MaveraScheduler'),          -- $ConnectionStrings_SchedulerContext_DB_Name
-    (N'MaveraStorageOperations'),  -- $ConnectionStrings_DB_Storage_Operations
-    (N'MaveraOcrOperations');      -- $ConnectionStrings_DB_Ocr_Operations
+    (N'$(prefix)MaveraInboxOutbox'),        -- $ConnectionStrings_DB_InboxOutbox
+    (N'$(prefix)MaveraScheduler'),          -- $ConnectionStrings_SchedulerContext_DB_Name
+    (N'$(prefix)MaveraStorageOperations'),  -- $ConnectionStrings_DB_Storage_Operations
+    (N'$(prefix)MaveraOcrOperations');      -- $ConnectionStrings_DB_Ocr_Operations
 
 DECLARE @i int = 1, @n int = (SELECT COUNT(*) FROM @owned), @db sysname, @sql nvarchar(max);
 
@@ -68,9 +82,9 @@ END
 DECLARE @expected TABLE (Ordinal int IDENTITY(1,1), DatabaseName sysname NOT NULL PRIMARY KEY, Placeholder varchar(64));
 
 INSERT INTO @expected (DatabaseName, Placeholder) VALUES
-    (N'vera-dev02',            'ConnectionStrings_DB_Name'),
-    (N'vera-caregivers-dev02', 'ConnectionStrings_CaregiverContext_DB_Name'),
-    (N'vera-identity-dev02',   'ConnectionString_DB_IdentityServer');
+    (N'$(prefix)vera-dev02',            'ConnectionStrings_DB_Name'),
+    (N'$(prefix)vera-caregivers-dev02', 'ConnectionStrings_CaregiverContext_DB_Name'),
+    (N'$(prefix)vera-identity-dev02',   'ConnectionString_DB_IdentityServer');
 
 DECLARE @unpopulated int = 0, @ph varchar(64), @tables int;
 SET @i = 1; SET @n = (SELECT COUNT(*) FROM @expected);
@@ -111,10 +125,6 @@ IF @unpopulated > 0
     RAISERROR('  NOTE: %d data-bearing database(s) have no data. They exist, so services start and EF migrations run, but queries for seeded data will fail. Add the backups to Databases.zip and redeploy.', 0, 1, @unpopulated) WITH NOWAIT;
 GO
 
-PRINT '';
-PRINT 'Databases on this instance:';
-SELECT name AS [database], state_desc AS [state], recovery_model_desc AS [recovery]
-FROM sys.databases
-WHERE database_id > 4
-ORDER BY name;
-GO
+/* The instance-wide inventory that used to live here has moved to
+   config/mssql-projects.sh, which prints it once at the very end. Here it
+   would repeat identically for every project. */

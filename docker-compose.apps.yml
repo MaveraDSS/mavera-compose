@@ -46,33 +46,52 @@ x-placeholders: &placeholders
   ServiceSettings_EnvURL: ${GATEWAY_HOST:?GATEWAY_HOST is not set}
   ServiceSettings_ClientUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}
 
-  # --- SQL Server: one server, seven catalogs ---
+  # --- SQL Server: one server, seven catalogs per project ---
+  # DB_PREFIX picks this project's set. mssql-init in the infra stack creates
+  # and restores them from SQL_PROJECTS; the prefix here must be field 1 of one
+  # of those entries, character for character. Empty means the unprefixed set,
+  # which is the pre-existing single-project deployment.
+  #
+  # For an enforced boundary rather than a convention, set DB_USER/DB_PASS to
+  # the per-project login mssql-init made (the `prefix:login:password` entry
+  # form) instead of sa. That login owns these seven catalogs -- so it is dbo
+  # in each, which EF Core migrations need -- and cannot open, or even
+  # enumerate, any other project's. Note DB_PASS means two different things:
+  # sa's password in the infra stack, just a connection password here.
   ConnectionStrings_DB_Server: ${DB_SERVER:-sqlserver}
   ConnectionStrings_DB_User: ${DB_USER:-sa}
   ConnectionStrings_DB_Pass: ${DB_PASS:?DB_PASS is not set}
-  ConnectionStrings_DB_Name: vera-dev02                  # restored manually; see README
-  ConnectionStrings_DB_InboxOutbox: MaveraInboxOutbox
-  ConnectionStrings_CaregiverContext_DB_Name: vera-caregivers-dev02   # restored manually
-  ConnectionStrings_SchedulerContext_DB_Name: MaveraScheduler
-  ConnectionString_DB_IdentityServer: vera-identity-dev02  # restored manually
-  ConnectionStrings_DB_Storage_Operations: MaveraStorageOperations
-  ConnectionStrings_DB_Ocr_Operations: MaveraOcrOperations
+  ConnectionStrings_DB_Name: ${DB_PREFIX:-}vera-dev02                  # restored manually; see README
+  ConnectionStrings_DB_InboxOutbox: ${DB_PREFIX:-}MaveraInboxOutbox
+  ConnectionStrings_CaregiverContext_DB_Name: ${DB_PREFIX:-}vera-caregivers-dev02   # restored manually
+  ConnectionStrings_SchedulerContext_DB_Name: ${DB_PREFIX:-}MaveraScheduler
+  ConnectionString_DB_IdentityServer: ${DB_PREFIX:-}vera-identity-dev02  # restored manually
+  ConnectionStrings_DB_Storage_Operations: ${DB_PREFIX:-}MaveraStorageOperations
+  ConnectionStrings_DB_Ocr_Operations: ${DB_PREFIX:-}MaveraOcrOperations
 
-  # --- MongoDB: one server, eleven databases ---
+  # --- MongoDB: one server, eleven databases per project ---
+  # Same DB_PREFIX as the SQL catalogs above, and the same rule: it must match
+  # a MONGO_PROJECTS entry that mongo-init has already provisioned. Mongo does
+  # not create a user on connect, so an unlisted prefix means every service
+  # fails to authenticate rather than finding an empty database.
+  #
+  # For an enforced boundary, set MONGO_USER/MONGO_PASS to this project's own
+  # pair: that user holds readWrite on these eleven databases and nothing else,
+  # and listDatabases will not even show it another project's names.
   ConnectionStrings_DB_Mongo_Server: mongo
   ConnectionStrings_DB_Mongo_User: ${MONGO_USER:-mavera}
   ConnectionStrings_DB_Mongo_Pass: ${MONGO_PASS:?MONGO_PASS is not set}
-  ConnectionStrings_DB_Mongo_AuditLoger: audit-logs
-  ConnectionStrings_DB_Mongo_EvaluationService: evaluation-service
-  ConnectionStrings_DB_Mongo_DocumentProcessor: document-processor
-  ConnectionStrings_DB_Mongo_DocumentClassifier: document-classifier
-  ConnectionStrings_DB_Mongo_DocumentSummaries: document-summaries
-  ConnectionStrings_DB_Mongo_DocumentAnonymize: document-anonymize
-  ConnectionStrings_DB_Mongo_RelevanceScore: relevance-score
-  ConnectionStrings_DB_Mongo_JournalEventsClassifier: journalevents-classifier
-  ConnectionStrings_DB_Mongo_IdentityCheck: identity-check
-  ConnectionStrings_DB_Mongo_Fkassan: fkassan
-  ConnectionStrings_DB_Mongo_EnhancedPatientView: enhanced-patient-view
+  ConnectionStrings_DB_Mongo_AuditLoger: ${DB_PREFIX:-}audit-logs
+  ConnectionStrings_DB_Mongo_EvaluationService: ${DB_PREFIX:-}evaluation-service
+  ConnectionStrings_DB_Mongo_DocumentProcessor: ${DB_PREFIX:-}document-processor
+  ConnectionStrings_DB_Mongo_DocumentClassifier: ${DB_PREFIX:-}document-classifier
+  ConnectionStrings_DB_Mongo_DocumentSummaries: ${DB_PREFIX:-}document-summaries
+  ConnectionStrings_DB_Mongo_DocumentAnonymize: ${DB_PREFIX:-}document-anonymize
+  ConnectionStrings_DB_Mongo_RelevanceScore: ${DB_PREFIX:-}relevance-score
+  ConnectionStrings_DB_Mongo_JournalEventsClassifier: ${DB_PREFIX:-}journalevents-classifier
+  ConnectionStrings_DB_Mongo_IdentityCheck: ${DB_PREFIX:-}identity-check
+  ConnectionStrings_DB_Mongo_Fkassan: ${DB_PREFIX:-}fkassan
+  ConnectionStrings_DB_Mongo_EnhancedPatientView: ${DB_PREFIX:-}enhanced-patient-view
 
   # --- RabbitMQ (host is hard-coded in the templates; see the alias on the broker) ---
   # One broker, one vhost per project: set RABBITMQ_VHOST to this project's and
@@ -88,7 +107,11 @@ x-placeholders: &placeholders
   MessageBroker_VirtualHost: ${RABBITMQ_VHOST:-/}
 
   # --- Redis ---
-  RedisInstance: redis
+  # `redis` is the shared instance in the infra stack. Set REDIS_HOST to
+  # `<prefix>redis` and add `project-redis` to COMPOSE_PROFILES to get this
+  # stack its own instance instead -- separate process, separate AOF file,
+  # separate keyspace. See the `project-redis` service at the bottom.
+  RedisInstance: ${REDIS_HOST:-redis}
   RedisPort: "6379"
   CacheType: ${CACHE_TYPE:-redis}             # redis | inmemory
 
@@ -281,6 +304,11 @@ x-dep-minio: &dep-minio
 x-dep-rabbit: &dep-rabbit
   rabbitmq: { condition: service_healthy }
 x-dep-redis: &dep-redis
+  # Deliberately still `redis`, and deliberately unused: every anchor in this
+  # block exists only to keep the file in lockstep with docker-compose.yml, and
+  # nothing active here has a depends_on. Do NOT repoint it at `project-redis` —
+  # a depends_on from a non-profiled service into a profiled one is a validation
+  # error on every stack that leaves the project-redis profile off.
   redis: { condition: service_healthy }
 
 x-healthcheck-defaults: &healthcheck-defaults
@@ -924,6 +952,49 @@ services:
   #   networks:
   #     dokploy-network:
   #       aliases: ["mavera-client-external-service.svc.cluster.local"]
+
+  # ===========================================================================
+  # THIS PROJECT'S OWN REDIS  (profile: project-redis)
+  # ===========================================================================
+  # NOT named `redis`. Compose registers a service's own name as a network
+  # alias, every stack shares dokploy-network, and two containers named `redis`
+  # would both claim that alias with Docker's DNS round-robining between them --
+  # the exact failure README documents for a second RabbitMQ broker. `redis`
+  # stays the infra stack's, nothing ever resolves `project-redis`, and the only
+  # name in use is the explicit alias below.
+  #
+  # This is namespace isolation -- separate process, separate AOF file,
+  # separate keyspace -- not authentication: anything on dokploy-network can
+  # still reach <prefix>redis:6379. $RedisInstance and $RedisPort are the only
+  # Redis placeholders in the 29 appsettings templates, so there is nowhere to
+  # put a credential or a key prefix without changing the service repos.
+  project-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # COMPOSE_PROFILES must list this, e.g. `all,project-redis`. Off by default
+    # so a stack that sets nothing is exactly what it was before.
+    profiles: ["project-redis"]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      # Compose namespaces this as <appName>_project-redis-data, which is
+      # already unique per stack. Do not pin `name:` or mark it external --
+      # either would collapse every project onto one volume.
+      - project-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      dokploy-network:
+        # The default must NOT be `redis` -- that is the collision -- and it
+        # cannot be ${REDIS_HOST:?}: Compose interpolates the whole document
+        # before profiles are applied, so a required variable here would break
+        # every stack that leaves this feature off.
+        aliases: ["${REDIS_HOST:-project-redis}"]
+
+volumes:
+  project-redis-data:
 
 networks:
   # Shared with docker-compose.infra.yml and with Dokploy's Traefik.

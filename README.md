@@ -142,9 +142,102 @@ needs no change in any service repo. Two things to know:
   name that `rabbitmq-init` never made gives every service `ACCESS_REFUSED`, not an empty namespace.
   App stacks are in another Compose project and cannot `depends_on` it — deploy infra first and let it
   settle, the same rule that already applies to `mssql-init` and `mongo-init`.
-- **It isolates messaging only.** SQL Server catalogs, Mongo databases, Redis keys and the
-  `<svc>.svc.cluster.local` aliases are still shared server-wide, so two app stacks on one host still
-  collide everywhere else. For a genuinely separate environment, use a separate Dokploy server.
+- **It isolates messaging only.** The data stores are separable too, but by their own knobs — see the
+  three sections below. What stays shared server-wide is the `<svc>.svc.cluster.local` aliases, so two
+  app stacks on one host still collide on service discovery. For a genuinely separate environment, use
+  a separate Dokploy server.
+
+### Per-project SQL Server catalogs
+
+Same idea, same shape. One `sqlserver` container, but one complete set of the seven catalogs per
+project — named `<prefix><catalog>` — and a login that can reach that set and nothing else.
+`DB_PREFIX` in the app stack selects the set; `mssql-init` creates them from `SQL_PROJECTS`.
+
+| entry | who may use the catalogs | boundary |
+|---|---|---|
+| `prefix` | `sa` | conventional — anything holding the `sa` password can reach any set |
+| `prefix:login:password` | a login that owns those seven and is denied everything else | enforced — SQL Server refuses it anywhere else |
+
+```bash
+# infra stack -- the prefix is verbatim, not a project name
+SQL_PROJECTS=alpha-:alpha_app:Alpha_Pw_1,beta-:beta_app:Beta_Pw_1
+
+# each app stack picks one, with the matching credentials
+DB_PREFIX=alpha-
+DB_USER=alpha_app
+DB_PASS=Alpha_Pw_1
+```
+
+The login **owns** its catalogs rather than being a member of `db_owner`. Both give the DDL rights EF
+Core migrations need, but the login is also denied `VIEW ANY DATABASE`, and under that a `db_owner`
+member sees only `master` and `tempdb` in `sys.databases` — which confuses SSMS, health checks and
+EF's database-existence probe. An owner sees the catalogs it owns and nothing else, which is the
+truth we want. It is additionally denied `CREATE ANY DATABASE` and `VIEW ANY DEFINITION`, holds no
+fixed server role (`mssql-projects.sh` strips any that appear), and `guest` is revoked from every
+managed catalog on every deploy — a restored backup can arrive with it enabled, and that is the one
+path a login with no user in a database could otherwise still take.
+
+Three things to know:
+
+- **The catalogs must exist before the services connect.** An unlisted prefix gives every service
+  *Cannot open database*, not an empty catalog. Deploy infra first and let it settle.
+- **Renaming can break 3-part references.** A view, procedure or synonym inside the restored data that
+  names `[vera-dev02]` explicitly keeps pointing at the original after a prefixed restore, because SQL
+  Server has no way to alias a database name. `mssql-restore.sh` audits for exactly this and prints an
+  `[xdb]` line per hit; `SQL_CROSSDB_STRICT=true` makes a hit fail the deploy. For the three catalogs
+  shipped here the expected result is zero.
+- **`sa` still reaches everything**, and the infra stack's `DB_PASS` *is* `sa`'s password — the same
+  caveat the RabbitMQ admin account carries. Each project costs ~450 MB of restored data and a share
+  of the single `MSSQL_MEMORY_LIMIT_MB`; `SQL_DEFAULT_CATALOGS=false` reclaims the unprefixed copy.
+
+### Per-project Mongo databases
+
+The same `DB_PREFIX` names the eleven Mongo databases, and `MONGO_PROJECTS` has the same two entry
+shapes. A project user holds `readWrite` on its own eleven and nothing else — never
+`readWriteAnyDatabase`, never a role on `admin`, never the cluster `listDatabases` action.
+
+| entry | who may use the databases | boundary |
+|---|---|---|
+| `prefix` | the shared `MONGO_USER` | conventional |
+| `prefix:user:password` | a user with `readWrite` on those eleven only | enforced — anything else is `Unauthorized` |
+
+```bash
+MONGO_PROJECTS=alpha-:alpha_mongo:Alpha_Mg_1,beta-:beta_mongo:Beta_Mg_1
+```
+
+Since MongoDB 4.0.5 `listDatabases` filters to what the caller holds privileges on, so a project user
+cannot even learn another project's database *names*. Two constraints fall out of the setup:
+
+- **Users are global.** The rendered connection string has no database in its path, so the driver
+  authenticates against `admin` and every user has to live there. Two projects therefore cannot share
+  a username; `mongo-init` rejects a duplicate rather than letting the second entry silently replace
+  the first project's grants.
+- **The prefix is capped at 38 characters.** Mongo allows 63 for a database name and the longest here
+  is `journalevents-classifier`. Going over would break only the longest few databases of a project,
+  so both init scripts reject it up front — and that cap is why the *SQL* prefix is capped too.
+
+### Per-project Redis
+
+Redis has no vhost and no useful ACL here: `$RedisInstance` and `$RedisPort` are the only Redis
+placeholders in the 29 `appsettings.json` templates, so there is nowhere to put a credential or a key
+prefix without changing the service repos. So a project gets its **own instance** instead, in its own
+app stack:
+
+```bash
+REDIS_HOST=alpha-redis
+COMPOSE_PROFILES=all,project-redis
+```
+
+That starts `project-redis` — a `redis:7-alpine` with its own AOF volume, reached only through the
+alias `alpha-redis`. The service is deliberately **not** called `redis`: Compose registers a service's
+own name as a network alias, so a second container by that name would claim it too and Docker's DNS
+would round-robin between the two — the same trap as deploying a second RabbitMQ broker. `redis`
+stays the infra stack's, and is what any stack that sets no `REDIS_HOST` keeps using.
+
+Be clear about what this buys: a separate process, a separate AOF file and a separate keyspace, but
+**not** authentication. Anything on `dokploy-network` can still reach `alpha-redis:6379`. Closing that
+means putting the instance on a project-private bridge network and adding that network to all 29
+services, which a YAML merge key cannot do through `x-service-base`.
 
 ### Previews
 
@@ -698,11 +791,19 @@ at an existing SQL instance.
 
 **Adding a database.** Put its `.bak` in the zip named `<database>*.bak`, and add the database to
 `RESTORE_DATABASES` in `config/mssql-restore.sh` (and to `@expected` in `00-init-databases.sql` if you
-want it reported).
+want it reported). Both are **source** names — the names inside the backups. `DB_PREFIX` is applied on
+top, so the list does not change when a project is added. If it is a catalog the services connect to,
+add it to `CATALOGS` in `config/mssql-projects.sh` as well, or the per-project login will not own it.
 
 Restoring under the **original** source names means any 3-part reference inside the data (views, procs,
-synonyms) keeps resolving. If you restore under different names, repoint the three placeholders in
-`x-placeholders` to match.
+synonyms) keeps resolving — which is why the unprefixed set is still the default. A prefixed restore
+cannot repoint those references, because SQL Server gives no way to alias a database name, so
+`mssql-restore.sh` proves it rather than assuming it: after each prefixed restore it queries
+`sys.sql_expression_dependencies` and `sys.synonyms` and searches `sys.sql_modules` for the source
+name, and prints an `[xdb]` line per hit. Zero hits for these three catalogs today. Set
+`SQL_CROSSDB_STRICT=true` to make a hit fail the deploy. A real hit has two fixes: rewrite the
+reference from a `config/mssql-init/10-*.sql` fixup that itself uses the `$(prefix)` sqlcmd variable,
+or leave that project on the empty prefix.
 
 Backups from SQL Server 2019 (major 15) restore cleanly onto this 2022 image; compatibility levels 110
 and 150 both remain supported.

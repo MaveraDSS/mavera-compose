@@ -98,6 +98,18 @@ services:
   # Restores the data-bearing databases, then creates the empty catalogs.
   # NOTE: the catalogs it creates are EMPTY —
   # see README "SQL schema is not solved by compose".
+  #
+  # Then one complete set of catalogs per project, plus a login scoped to that
+  # set, driven by SQL_PROJECTS; see config/mssql-projects.sh for the entry
+  # format. One server, but the login is a boundary the server enforces: a
+  # project holding only its own credentials cannot open, or even enumerate,
+  # another project's catalogs. The network is not the boundary — every stack
+  # shares dokploy-network and `sqlserver` resolves from all of them.
+  #
+  # App stacks in other Dokploy projects cannot `depends_on` this — Compose
+  # cannot wait on a service in another project — so a project deployed before
+  # its catalogs exist crash-loops on "Cannot open database" until this has
+  # run. Same ordering rule as rabbitmq-init: deploy infra first, let it settle.
   # Reuses the server image: it already ships /opt/mssql-tools18/bin/sqlcmd, so
   # there is no second image to pull and the client version always matches the
   # server. (There is no mcr.microsoft.com/mssql-tools18 repository; the only
@@ -113,11 +125,22 @@ services:
       DB_PASS: ${DB_PASS:?DB_PASS is not set}
       MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
       SQL_RESTORE_ENABLED: ${SQL_RESTORE_ENABLED:-true}
-      # DESTRUCTIVE: true re-restores over the live databases on every deploy.
+      # DESTRUCTIVE: true re-restores over the live databases on every deploy —
+      # and with SQL_PROJECTS set, that is every project's copy, not just one.
       SQL_RESTORE_FORCE: ${SQL_RESTORE_FORCE:-false}
+      # One catalog set + one scoped login per project. Empty = the single
+      # unprefixed set, which is the pre-existing behaviour.
+      SQL_PROJECTS: ${SQL_PROJECTS:-}
+      # true turns a [xdb] finding (a 3-part reference a prefixed restore does
+      # not repoint) from a warning into a failed deploy.
+      SQL_CROSSDB_STRICT: ${SQL_CROSSDB_STRICT:-false}
+      # false skips the unprefixed pass entirely — for a server where every
+      # project is prefixed and you do not want a spare copy of the backups.
+      SQL_DEFAULT_CATALOGS: ${SQL_DEFAULT_CATALOGS:-true}
     volumes:
       - ./config/mssql-init:/init:ro
       - ./config/mssql-restore.sh:/mssql-restore.sh:ro
+      - ./config/mssql-projects.sh:/mssql-projects.sh:ro
       # Same path as in `sqlserver`, deliberately: mssql-restore.sh globs this
       # directory for <db>*.bak and puts the paths it finds straight into the
       # RESTORE statement the server executes.
@@ -135,16 +158,29 @@ services:
             EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
             EXEC sp_configure 'max server memory (MB)', $$MSSQL_MEMORY_LIMIT_MB; RECONFIGURE;"
         fi
-        # Restore first: 00-init-databases.sql then reports the data-bearing
-        # databases as [present] rather than [MISSING], so one log confirms both.
-        /bin/sh /mssql-restore.sh
-        for f in /init/*.sql; do
-          echo "applying $$f"
-          /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U sa -P "$$DB_PASS" -b -i "$$f"
-        done
+        # The unprefixed set: the catalogs this stack had before projects were a
+        # thing. Restore first, so 00-init-databases.sql then reports the
+        # data-bearing ones as [restored] rather than [MISSING] and one log
+        # confirms both. -v prefix="" is required, not cosmetic: the .sql names
+        # every catalog with a sqlcmd variable and sqlcmd fails if it is undefined.
+        if [ "$$SQL_DEFAULT_CATALOGS" = "true" ]; then
+          /bin/sh /mssql-restore.sh
+          for f in /init/*.sql; do
+            echo "applying $$f"
+            /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U sa -P "$$DB_PASS" -b -v prefix="" -i "$$f"
+          done
+        else
+          echo "SQL_DEFAULT_CATALOGS=false - skipping the unprefixed set"
+        fi
+        # Then the same again, once per SQL_PROJECTS entry, plus its login.
+        /bin/sh /mssql-projects.sh
         echo "mssql-init complete"
     networks: [dokploy-network]
 
+  # The shared instance, and the fallback for any app stack that does not set
+  # REDIS_HOST. It owns the alias `redis` exclusively: a project wanting its own
+  # keyspace brings up `project-redis` in its app stack under a different alias,
+  # never a second container called `redis`. See docker-compose.apps.yml.
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -227,6 +263,17 @@ services:
       start_period: 30s
     networks: [dokploy-network]
 
+  # One set of the eleven databases per project, plus a user with readWrite on
+  # that set and nothing else. Driven by MONGO_PROJECTS; see
+  # config/mongo-init.js for the entry format and for why every user has to
+  # live in `admin`. Since MongoDB 4.0.5 listDatabases filters to what the
+  # caller can reach, so a project user cannot even learn another project's
+  # database names.
+  #
+  # Same ordering rule as rabbitmq-init: app stacks are in another Compose
+  # project and cannot depends_on this, so a project deployed before its
+  # databases and user exist gets "Authentication failed" on every service.
+  # Deploy infra first and let it settle.
   mongo-init:
     image: mongo:7
     restart: "no"
@@ -237,6 +284,7 @@ services:
       MONGO_APP_PASS: ${MONGO_PASS:?MONGO_PASS is not set}
       MONGO_ROOT_USER: ${MONGO_ROOT_USER:-root}
       MONGO_ROOT_PASS: ${MONGO_ROOT_PASS:?MONGO_ROOT_PASS is not set}
+      MONGO_PROJECTS: ${MONGO_PROJECTS:-}
     volumes:
       - ./config/mongo-init.js:/init/mongo-init.js:ro
     entrypoint:
@@ -244,7 +292,16 @@ services:
       - -c
       - |
         mongosh "mongodb://$$MONGO_ROOT_USER:$$MONGO_ROOT_PASS@mongo:27017/admin" \
-          --quiet /init/mongo-init.js || echo "mongo-init: users may already exist, continuing"
+          --quiet /init/mongo-init.js
+        rc=$$?
+        # 2 means the script rejected MONGO_PROJECTS before touching the server.
+        # A bad list must stop the deploy, not provision half of it. Any other
+        # non-zero stays tolerated, which is what the old `|| echo` did.
+        if [ "$$rc" = "2" ]; then
+          echo "mongo-init: invalid MONGO_PROJECTS - nothing was changed" >&2
+          exit 1
+        fi
+        [ "$$rc" = "0" ] || echo "mongo-init: mongosh exited $$rc; users may already exist, continuing"
         echo "mongo-init complete"
     networks: [dokploy-network]
 

@@ -60,33 +60,52 @@ x-placeholders: &placeholders
   ServiceSettings_EnvURL: ${GATEWAY_HOST:?GATEWAY_HOST is not set}
   ServiceSettings_ClientUrl: ${PUBLIC_SCHEME:-http}://${GATEWAY_HOST:?GATEWAY_HOST is not set}
 
-  # --- SQL Server: one server, seven catalogs ---
+  # --- SQL Server: one server, seven catalogs per project ---
+  # DB_PREFIX picks this project's set. mssql-init in the infra stack creates
+  # and restores them from SQL_PROJECTS; the prefix here must be field 1 of one
+  # of those entries, character for character. Empty means the unprefixed set,
+  # which is the pre-existing single-project deployment.
+  #
+  # For an enforced boundary rather than a convention, set DB_USER/DB_PASS to
+  # the per-project login mssql-init made (the `prefix:login:password` entry
+  # form) instead of sa. That login owns these seven catalogs -- so it is dbo
+  # in each, which EF Core migrations need -- and cannot open, or even
+  # enumerate, any other project's. Note DB_PASS means two different things:
+  # sa's password in the infra stack, just a connection password here.
   ConnectionStrings_DB_Server: ${DB_SERVER:-sqlserver}
   ConnectionStrings_DB_User: ${DB_USER:-sa}
   ConnectionStrings_DB_Pass: ${DB_PASS:?DB_PASS is not set}
-  ConnectionStrings_DB_Name: vera-dev02                  # restored manually; see README
-  ConnectionStrings_DB_InboxOutbox: MaveraInboxOutbox
-  ConnectionStrings_CaregiverContext_DB_Name: vera-caregivers-dev02   # restored manually
-  ConnectionStrings_SchedulerContext_DB_Name: MaveraScheduler
-  ConnectionString_DB_IdentityServer: vera-identity-dev02  # restored manually
-  ConnectionStrings_DB_Storage_Operations: MaveraStorageOperations
-  ConnectionStrings_DB_Ocr_Operations: MaveraOcrOperations
+  ConnectionStrings_DB_Name: ${DB_PREFIX:-}vera-dev02                  # restored manually; see README
+  ConnectionStrings_DB_InboxOutbox: ${DB_PREFIX:-}MaveraInboxOutbox
+  ConnectionStrings_CaregiverContext_DB_Name: ${DB_PREFIX:-}vera-caregivers-dev02   # restored manually
+  ConnectionStrings_SchedulerContext_DB_Name: ${DB_PREFIX:-}MaveraScheduler
+  ConnectionString_DB_IdentityServer: ${DB_PREFIX:-}vera-identity-dev02  # restored manually
+  ConnectionStrings_DB_Storage_Operations: ${DB_PREFIX:-}MaveraStorageOperations
+  ConnectionStrings_DB_Ocr_Operations: ${DB_PREFIX:-}MaveraOcrOperations
 
-  # --- MongoDB: one server, eleven databases ---
+  # --- MongoDB: one server, eleven databases per project ---
+  # Same DB_PREFIX as the SQL catalogs above, and the same rule: it must match
+  # a MONGO_PROJECTS entry that mongo-init has already provisioned. Mongo does
+  # not create a user on connect, so an unlisted prefix means every service
+  # fails to authenticate rather than finding an empty database.
+  #
+  # For an enforced boundary, set MONGO_USER/MONGO_PASS to this project's own
+  # pair: that user holds readWrite on these eleven databases and nothing else,
+  # and listDatabases will not even show it another project's names.
   ConnectionStrings_DB_Mongo_Server: mongo
   ConnectionStrings_DB_Mongo_User: ${MONGO_USER:-mavera}
   ConnectionStrings_DB_Mongo_Pass: ${MONGO_PASS:?MONGO_PASS is not set}
-  ConnectionStrings_DB_Mongo_AuditLoger: audit-logs
-  ConnectionStrings_DB_Mongo_EvaluationService: evaluation-service
-  ConnectionStrings_DB_Mongo_DocumentProcessor: document-processor
-  ConnectionStrings_DB_Mongo_DocumentClassifier: document-classifier
-  ConnectionStrings_DB_Mongo_DocumentSummaries: document-summaries
-  ConnectionStrings_DB_Mongo_DocumentAnonymize: document-anonymize
-  ConnectionStrings_DB_Mongo_RelevanceScore: relevance-score
-  ConnectionStrings_DB_Mongo_JournalEventsClassifier: journalevents-classifier
-  ConnectionStrings_DB_Mongo_IdentityCheck: identity-check
-  ConnectionStrings_DB_Mongo_Fkassan: fkassan
-  ConnectionStrings_DB_Mongo_EnhancedPatientView: enhanced-patient-view
+  ConnectionStrings_DB_Mongo_AuditLoger: ${DB_PREFIX:-}audit-logs
+  ConnectionStrings_DB_Mongo_EvaluationService: ${DB_PREFIX:-}evaluation-service
+  ConnectionStrings_DB_Mongo_DocumentProcessor: ${DB_PREFIX:-}document-processor
+  ConnectionStrings_DB_Mongo_DocumentClassifier: ${DB_PREFIX:-}document-classifier
+  ConnectionStrings_DB_Mongo_DocumentSummaries: ${DB_PREFIX:-}document-summaries
+  ConnectionStrings_DB_Mongo_DocumentAnonymize: ${DB_PREFIX:-}document-anonymize
+  ConnectionStrings_DB_Mongo_RelevanceScore: ${DB_PREFIX:-}relevance-score
+  ConnectionStrings_DB_Mongo_JournalEventsClassifier: ${DB_PREFIX:-}journalevents-classifier
+  ConnectionStrings_DB_Mongo_IdentityCheck: ${DB_PREFIX:-}identity-check
+  ConnectionStrings_DB_Mongo_Fkassan: ${DB_PREFIX:-}fkassan
+  ConnectionStrings_DB_Mongo_EnhancedPatientView: ${DB_PREFIX:-}enhanced-patient-view
 
   # --- RabbitMQ (host is hard-coded in the templates; see the alias on the broker) ---
   # One broker, one vhost per project. `rabbitmq-init` creates the vhosts listed
@@ -98,7 +117,11 @@ x-placeholders: &placeholders
   MessageBroker_VirtualHost: ${RABBITMQ_VHOST:-/}
 
   # --- Redis ---
-  RedisInstance: redis
+  # `redis` is the shared instance in the infra stack. Set REDIS_HOST to
+  # `<prefix>redis` and add `project-redis` to COMPOSE_PROFILES to get this
+  # stack its own instance instead -- separate process, separate AOF file,
+  # separate keyspace. See the `project-redis` service at the bottom.
+  RedisInstance: ${REDIS_HOST:-redis}
   RedisPort: "6379"
   CacheType: ${CACHE_TYPE:-redis}             # redis | inmemory
 
@@ -380,6 +403,12 @@ services:
   # Restores the data-bearing databases, then creates the empty catalogs.
   # NOTE: the catalogs it creates are EMPTY —
   # see README "SQL schema is not solved by compose".
+  #
+  # Then one complete set of catalogs per project, plus a login scoped to that
+  # set, driven by SQL_PROJECTS; see config/mssql-projects.sh for the entry
+  # format. Locally there is only one project, so this is normally a no-op —
+  # it is here so this file stays the source of truth for the split stacks.
+  #
   # Reuses the server image: it already ships /opt/mssql-tools18/bin/sqlcmd, so
   # there is no second image to pull and the client version always matches the
   # server. (There is no mcr.microsoft.com/mssql-tools18 repository; the only
@@ -395,11 +424,22 @@ services:
       DB_PASS: ${DB_PASS:?DB_PASS is not set}
       MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
       SQL_RESTORE_ENABLED: ${SQL_RESTORE_ENABLED:-true}
-      # DESTRUCTIVE: true re-restores over the live databases on every deploy.
+      # DESTRUCTIVE: true re-restores over the live databases on every deploy —
+      # and with SQL_PROJECTS set, that is every project's copy, not just one.
       SQL_RESTORE_FORCE: ${SQL_RESTORE_FORCE:-false}
+      # One catalog set + one scoped login per project. Empty = the single
+      # unprefixed set, which is the pre-existing behaviour.
+      SQL_PROJECTS: ${SQL_PROJECTS:-}
+      # true turns a [xdb] finding (a 3-part reference a prefixed restore does
+      # not repoint) from a warning into a failed deploy.
+      SQL_CROSSDB_STRICT: ${SQL_CROSSDB_STRICT:-false}
+      # false skips the unprefixed pass entirely — for a server where every
+      # project is prefixed and you do not want a spare copy of the backups.
+      SQL_DEFAULT_CATALOGS: ${SQL_DEFAULT_CATALOGS:-true}
     volumes:
       - ./config/mssql-init:/init:ro
       - ./config/mssql-restore.sh:/mssql-restore.sh:ro
+      - ./config/mssql-projects.sh:/mssql-projects.sh:ro
       # Same path as in `sqlserver`, deliberately: mssql-restore.sh globs this
       # directory for <db>*.bak and puts the paths it finds straight into the
       # RESTORE statement the server executes.
@@ -417,13 +457,22 @@ services:
             EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
             EXEC sp_configure 'max server memory (MB)', $$MSSQL_MEMORY_LIMIT_MB; RECONFIGURE;"
         fi
-        # Restore first: 00-init-databases.sql then reports the data-bearing
-        # databases as [present] rather than [MISSING], so one log confirms both.
-        /bin/sh /mssql-restore.sh
-        for f in /init/*.sql; do
-          echo "applying $$f"
-          /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U sa -P "$$DB_PASS" -b -i "$$f"
-        done
+        # The unprefixed set: the catalogs this stack had before projects were a
+        # thing. Restore first, so 00-init-databases.sql then reports the
+        # data-bearing ones as [restored] rather than [MISSING] and one log
+        # confirms both. -v prefix="" is required, not cosmetic: the .sql names
+        # every catalog with a sqlcmd variable and sqlcmd fails if it is undefined.
+        if [ "$$SQL_DEFAULT_CATALOGS" = "true" ]; then
+          /bin/sh /mssql-restore.sh
+          for f in /init/*.sql; do
+            echo "applying $$f"
+            /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U sa -P "$$DB_PASS" -b -v prefix="" -i "$$f"
+          done
+        else
+          echo "SQL_DEFAULT_CATALOGS=false - skipping the unprefixed set"
+        fi
+        # Then the same again, once per SQL_PROJECTS entry, plus its login.
+        /bin/sh /mssql-projects.sh
         echo "mssql-init complete"
     networks: [mavera]
 
@@ -501,6 +550,11 @@ services:
       start_period: 30s
     networks: [mavera]
 
+  # One set of the eleven databases per project, plus a user scoped to that set;
+  # see config/mongo-init.js for the MONGO_PROJECTS entry format. Locally there
+  # is only one project, so MONGO_DB_PREFIX is what matters here: it keeps the
+  # shared user's roles on the same databases the placeholders point at when
+  # someone sets DB_PREFIX, which otherwise fails every write with Unauthorized.
   mongo-init:
     image: mongo:7
     restart: "no"
@@ -511,6 +565,8 @@ services:
       MONGO_APP_PASS: ${MONGO_PASS:?MONGO_PASS is not set}
       MONGO_ROOT_USER: ${MONGO_ROOT_USER:-root}
       MONGO_ROOT_PASS: ${MONGO_ROOT_PASS:?MONGO_ROOT_PASS is not set}
+      MONGO_PROJECTS: ${MONGO_PROJECTS:-}
+      MONGO_DB_PREFIX: ${DB_PREFIX:-}
     volumes:
       - ./config/mongo-init.js:/init/mongo-init.js:ro
     entrypoint:
@@ -518,7 +574,16 @@ services:
       - -c
       - |
         mongosh "mongodb://$$MONGO_ROOT_USER:$$MONGO_ROOT_PASS@mongo:27017/admin" \
-          --quiet /init/mongo-init.js || echo "mongo-init: users may already exist, continuing"
+          --quiet /init/mongo-init.js
+        rc=$$?
+        # 2 means the script rejected MONGO_PROJECTS before touching the server.
+        # A bad list must stop the deploy, not provision half of it. Any other
+        # non-zero stays tolerated, which is what the old `|| echo` did.
+        if [ "$$rc" = "2" ]; then
+          echo "mongo-init: invalid MONGO_PROJECTS - nothing was changed" >&2
+          exit 1
+        fi
+        [ "$$rc" = "0" ] || echo "mongo-init: mongosh exited $$rc; users may already exist, continuing"
         echo "mongo-init complete"
     networks: [mavera]
 
