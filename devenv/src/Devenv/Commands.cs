@@ -69,7 +69,7 @@ public static class Commands
         Console.WriteLine(ReposRootClaudeMd.WriteIfMissing(m, ws.ReposRoot)
             ? $"  wrote {claudeMd} (what this folder holds, how to work from it); open Claude Code in {ws.ReposRoot}"
             : $"  {claudeMd} exists, left as is");
-        Console.WriteLine("  the dss plugin gives Claude Code the /dss:dev-env, /dss:verify and /dss:ticket commands in every folder:");
+        Console.WriteLine("  the dss plugin gives Claude Code the /dss:dev-env, /dss:repro, /dss:verify and /dss:ticket commands in every folder:");
         Console.WriteLine("    claude plugin marketplace add MaveraDSS/mavera-compose");
         Console.WriteLine("    claude plugin install dss@mavera");
 

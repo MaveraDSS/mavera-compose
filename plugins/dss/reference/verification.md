@@ -57,9 +57,46 @@ persistence) on every document open; third-party noise, note it and move on. A 4
 `/expertise/<area>.svg` is a missing icon for a test expertise area, not an API failure. Requests to
 `/Vera/<Service>/**` for a `--local` service show up in that service's log as `Request finished ... localhost:5151/...`.
 
+## Before and after (bug tickets)
+
+A bug is proven fixed by running the same checks twice: once on the unfixed code, once on the fix. The two runs
+share one folder:
+
+```
+<DEVENV>/.state/evidence/<TICKET>/
+  before/        written by /dss:repro against the unfixed code; each check expects the BUGGY outcome
+    checks.md    the contract: the check list both runs use
+    summary.md, api.md, browser-<n>.png, console.txt, network.txt, log-<service>.txt
+  after/         written by /dss:verify against the fix; each check expects the CORRECT outcome
+    summary.md, api.md, browser-<n>.png, ...
+  summary.md     written by /dss:verify at the end: the before/after table (see below)
+```
+
+`before/checks.md`:
+
+```
+# DSS-1234 repro checks
+reproduced against: mavera-document-service develop @ 3bb9939; frontend develop @ 91acc0f; dev02 (same request)
+date: 2026-09-22
+
+| # | Check | How | Buggy outcome (before) | Correct outcome (after) | Before: local | Before: dev02 |
+|---|-------|-----|------------------------|-------------------------|---------------|---------------|
+| 1 | foreign-org GetDocumentSummaries | POST /libertine/DocumentService/EvaluationDocument/GetDocumentSummaries, body with another org's evaluation id | 200 with summaries | 403 | 200 (api.md #1) | 200 |
+```
+
+Rules:
+
+- `/dss:verify` finds `before/checks.md` and takes its checks, expecting the "correct outcome" column; the
+  ticket's other test steps are added, none dropped. Results go to `after/`. The top-level `summary.md` then has
+  one row per check: before, after, verdict (`fixed`, `still broken`, `unchanged: not a proof`). A check whose
+  before and after outcomes are the same proves nothing about the fix; say so instead of counting it as a pass.
+- `/dss:ticket` runs repro before branching on bug tickets, so the fix is planned against seen behaviour.
+- Feature tickets have no bug to show: use the flat layout below, no `before/`.
+
 ## Evidence
 
-Folder: `<DEVENV>/.state/evidence/<TICKET>/` (gitignored). Contents:
+Folder: `<DEVENV>/.state/evidence/<TICKET>/` (gitignored). Bug tickets use the before/after layout above; the
+flat layout here is for features and for checks with no repro. Contents:
 
 - `summary.md`: ticket, date, what was checked, result per check (pass/fail), links to the files below,
   open points. Written for a reviewer who was not there.

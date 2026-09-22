@@ -18,6 +18,9 @@ Read `${CLAUDE_PLUGIN_ROOT}/reference/devenv.md` and `${CLAUDE_PLUGIN_ROOT}/refe
   take the checks from "How can it be tested?" and the DoD; the comments and the linked predecessor ticket often
   hold the concrete test steps and data (`reference/context.md`, sections 1 and 2). Turn each into one concrete check: request + expected status/fields, or a
   browser flow + expected screen state.
+- `<DEVENV>/.state/evidence/$ticket/before/checks.md` exists (written by `/dss:repro`): every row of it is a
+  check, expecting the "correct outcome" column. Add the ticket's other test steps; drop none of the repro rows.
+  Tell the developer the run will produce the before/after table.
 - Without a key, or when the ticket has no test description: ask the developer for the flow to check in one
   sentence and derive the checks from that.
 - Show the check list and let the developer trim it before you run anything.
@@ -51,6 +54,9 @@ and the local service log for the same moment.
 ## 5. Report
 
 Write `summary.md`, `api.md`, `console.txt`, `network.txt`, `log-<service>.txt` and the screenshots as laid out in
-`verification.md`. Then report in chat: pass/fail per check with the evidence file, anything unexpected (errors in
-the console, 4xx/5xx, exceptions in the log) even when the check passed, and the folder path. Do not post to Jira
-unless asked; when asked, the comment is `summary.md` without the token or any secret.
+`verification.md`. With a `before/` folder, write them into `after/` and then the top-level `summary.md` with the
+before/after table: one row per check, before outcome, after outcome, verdict (`fixed`, `still broken`,
+`unchanged: not a proof`). Then report in chat: pass/fail per check with the evidence file (for bugs: the
+before/after table itself), anything unexpected (errors in the console, 4xx/5xx, exceptions in the log) even when
+the check passed, and the folder path. Do not post to Jira unless asked; when asked, the comment is `summary.md`
+without the token or any secret.

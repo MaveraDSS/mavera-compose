@@ -168,7 +168,7 @@ Run the frontend flows that hit the service; the service log is in `.state/logs/
 
 ## Claude Code
 
-The `dss` plugin in this repository (`plugins/dss`, DSS-5588 and DSS-5647) gives Claude Code three commands
+The `dss` plugin in this repository (`plugins/dss`, DSS-5588 and DSS-5647) gives Claude Code four commands
 that work in every repo once installed:
 
 ```
@@ -179,8 +179,9 @@ claude plugin install dss@mavera
 | Command | What it does |
 |---|---|
 | `/dss:dev-env DSS-1234` | Reads the ticket, proposes the services to run locally with a reason each, and after your yes runs `devenv up -d --local ...`. |
-| `/dss:verify DSS-1234` | Checks the stack against the ticket's "how to test" (starting it first, after your yes, when it is down): API calls through libertine with `devenv token`, and Claude driving Chrome (you log in once). Evidence lands in `.state/evidence/<ticket>/`. |
-| `/dss:ticket DSS-1234` | The whole loop: understand, start the stack, branch per repo convention, plan, implement after your yes, unit tests, restart the service, verify, commit. No push or PR unless asked. |
+| `/dss:repro DSS-1234` | Bugs only. Turns the ticket's steps into checks whose expected outcome is the buggy one, runs them on the unfixed code (and the same request against dev02 where cheap), and writes `.state/evidence/<ticket>/before/` with a `checks.md` that verify reuses. "Not reproduced" is a result, reported with the likely reasons. |
+| `/dss:verify DSS-1234` | Checks the stack against the ticket's "how to test" (starting it first, after your yes, when it is down): API calls through libertine with `devenv token`, and Claude driving Chrome (you log in once). Evidence lands in `.state/evidence/<ticket>/`; with a `before/` folder it writes `after/` and a before/after table. |
+| `/dss:ticket DSS-1234` | The whole loop: understand, start the stack, reproduce when it is a bug, branch per repo convention, plan, implement after your yes, unit tests, restart the service, verify, commit. For a bug the report ends with the before/after table. No push or PR unless asked. |
 
 Open Claude Code in the **repos root** (the folder holding mavera-compose and the other repos side by side),
 not inside one repo: every repo is in reach and the skills find devenv at `./mavera-compose/devenv`. `setup`

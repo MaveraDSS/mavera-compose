@@ -10,7 +10,7 @@
     {
       "name": "dss",
       "source": "./plugins/dss",
-      "description": "Work a DSS ticket on the local devenv stack: /dss:dev-env, /dss:verify, /dss:ticket"
+      "description": "Work a DSS ticket on the local devenv stack: /dss:dev-env, /dss:repro, /dss:verify, /dss:ticket"
     }
   ]
 }

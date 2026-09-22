@@ -91,6 +91,7 @@ public class ToolingTests : IDisposable
         Assert.Contains("`mavera-libertine`", text);
         Assert.Contains("`mavera-evaluation-service`", text);
         Assert.Contains("/dss:ticket", text);
+        Assert.Contains("/dss:repro", text);
         Assert.Contains("read its `CLAUDE.md`", text);
 
         Assert.True(ReposRootClaudeMd.WriteIfMissing(m, _root));

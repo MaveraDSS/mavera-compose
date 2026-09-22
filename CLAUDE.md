@@ -8,7 +8,7 @@ Two things live here:
 - **devenv** (`devenv/`): run the frontend, libertine and chosen services on a developer machine against
   dev02. A .NET 8 console app; `devenv/README.md` is the source of truth for how it works.
 - **The `dss` Claude Code plugin** (`plugins/dss`, marketplace in `.claude-plugin/`): the `/dss:dev-env`,
-  `/dss:verify` and `/dss:ticket` skills. They orchestrate work across the other repos and read each repo's
+  `/dss:repro`, `/dss:verify` and `/dss:ticket` skills. They orchestrate work across the other repos and read each repo's
   own `CLAUDE.md` for its conventions; do not copy those conventions here.
 
 ## Working in this repo
