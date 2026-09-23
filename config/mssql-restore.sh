@@ -77,21 +77,26 @@ XDB_FLAG=/tmp/mssql-restore-xdb.$$
 
 # --- helpers -----------------------------------------------------------------
 
+# Every sqlcmd here gets </dev/null. Left to inherit, it takes whatever stdin
+# its caller has -- inside restore_one's `while read ... done < "$filelist"`
+# that is the file list itself, and that combination deadlocked mssql-init in
+# anon_pipe_read with no child left to write the pipe. -Q never needs stdin.
+
 # Run a statement, letting sqlcmd print its own output. -b => non-zero exit on error.
 run_sql() {
-    "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -Q "SET NOCOUNT ON; $1"
+    "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -Q "SET NOCOUNT ON; $1" </dev/null
 }
 
 # Run a statement and return the first bare value (no headers, trimmed).
 query_value() {
     "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -h -1 -W \
-        -Q "SET NOCOUNT ON; $1" 2>/dev/null | tr -d '\r' | sed '/^$/d' | head -1
+        -Q "SET NOCOUNT ON; $1" </dev/null 2>/dev/null | tr -d '\r' | sed '/^$/d' | head -1
 }
 
 # Run a statement and return every non-empty row, one per line.
 query_rows() {
     "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -h -1 -W \
-        -Q "SET NOCOUNT ON; $1" 2>/dev/null | tr -d '\r' | sed '/^$/d'
+        -Q "SET NOCOUNT ON; $1" </dev/null 2>/dev/null | tr -d '\r' | sed '/^$/d'
 }
 
 # Escape a value for a T-SQL string literal.
@@ -233,7 +238,15 @@ restore_one() {
     filelist=/tmp/filelist.$$
     "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -h -1 -W -s '|' \
         -Q "SET NOCOUNT ON; RESTORE FILELISTONLY FROM DISK = N'$(sql_str "$bak")';" \
-        | tr -d '\r' > "$filelist"
+        </dev/null | tr -d '\r' > "$filelist"
+
+    # Every file already on the instance that belongs to some OTHER database,
+    # one "physical_name|database" per line. Fetched once, up front, so the
+    # loop below stays pure shell: it reads "$filelist" on stdin, and a sqlcmd
+    # inside it is exactly what hung this script.
+    taken="$(query_rows "
+        SELECT physical_name + N'|' + DB_NAME(database_id) FROM sys.master_files
+        WHERE DB_NAME(database_id) <> N'$db_sql';")"
 
     moves=''
     data_files=0
@@ -265,14 +278,19 @@ restore_one() {
         # Tripwire. If that path is already a file of some OTHER database the
         # restore would overwrite live data. Nothing in the naming scheme should
         # ever produce this, which is exactly why it is worth asserting.
-        owner_db="$(query_value "
-            SELECT TOP 1 DB_NAME(database_id) FROM sys.master_files
-            WHERE physical_name = N'$(sql_str "$phys")';")"
-        if [ -n "$owner_db" ] && [ "$owner_db" != "$db" ]; then
-            echo "  [ERROR]   $db: $phys already belongs to database '$owner_db'" >&2
-            rm -f "$filelist"
-            return 1
-        fi
+        # $taken already leaves out this database's own files.
+        case "
+$taken
+" in
+            *"
+$phys|"*)
+                owner_db=${taken#*"$phys|"}
+                owner_db=${owner_db%%"
+"*}
+                echo "  [ERROR]   $db: $phys already belongs to database '$owner_db'" >&2
+                rm -f "$filelist"
+                return 1 ;;
+        esac
 
         moves="$moves, MOVE N'$(sql_str "$logical")' TO N'$(sql_str "$phys")'"
         total_files=$((total_files + 1))

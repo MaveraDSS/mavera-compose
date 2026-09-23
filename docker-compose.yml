@@ -455,7 +455,7 @@ services:
           echo "capping max server memory at $$MSSQL_MEMORY_LIMIT_MB MB"
           $$SQLCMD -C -S sqlserver -U sa -P "$$DB_PASS" -b -Q "
             EXEC sp_configure 'show advanced options', 1; RECONFIGURE;
-            EXEC sp_configure 'max server memory (MB)', $$MSSQL_MEMORY_LIMIT_MB; RECONFIGURE;"
+            EXEC sp_configure 'max server memory (MB)', $$MSSQL_MEMORY_LIMIT_MB; RECONFIGURE;" </dev/null
         fi
         # The unprefixed set: the catalogs this stack had before projects were a
         # thing. Restore first, so 00-init-databases.sql then reports the
@@ -466,7 +466,7 @@ services:
           /bin/sh /mssql-restore.sh
           for f in /init/*.sql; do
             echo "applying $$f"
-            /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U sa -P "$$DB_PASS" -b -v prefix="" -i "$$f"
+            /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U sa -P "$$DB_PASS" -b -v prefix="" -i "$$f" </dev/null
           done
         else
           echo "SQL_DEFAULT_CATALOGS=false - skipping the unprefixed set"

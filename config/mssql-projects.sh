@@ -67,7 +67,7 @@ sql_str() { printf '%s' "$1" | sed "s/'/''/g"; }
 sql_id() { printf '[%s]' "$(printf '%s' "$1" | sed 's/]/]]/g')"; }
 
 # Run a batch with sqlcmd's variable preprocessor OFF. -b => fail the deploy.
-run_sql() { "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -x -Q "SET NOCOUNT ON; $1"; }
+run_sql() { "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -x -Q "SET NOCOUNT ON; $1" </dev/null; }
 
 # Split one list entry into $_prefix / $_login / $_pass (and $_entry, trimmed,
 # for error messages). On the first two colons only, so a password may contain
@@ -130,7 +130,7 @@ grant_login() {
         ALTER LOGIN $l_id WITH PASSWORD = N'$(sql_str "$pass")';
 
     /* No fixed server role, ever. Report and strip anything added by hand --
-       sysadmin or securityadmin here would undo every DENY below. `public` is
+       sysadmin or securityadmin here would undo every DENY below. 'public' is
        implicit and does not appear in sys.server_role_members. */
     DECLARE @r sysname, @s nvarchar(max);
     DECLARE role_cur CURSOR LOCAL FAST_FORWARD FOR
@@ -190,7 +190,7 @@ provision() {
   for f in "$INIT_DIR"/*.sql; do
     [ -f "$f" ] || continue
     echo "  applying $(basename "$f")"
-    "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -v prefix="$prefix" -i "$f"
+    "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -v prefix="$prefix" -i "$f" </dev/null
   done
 }
 
@@ -199,7 +199,7 @@ inventory() {
   echo "Databases on this instance:"
   "$SQLCMD" -C -S "$SERVER" -U sa -P "$DB_PASS" -b -Q "SET NOCOUNT ON;
     SELECT name AS [database], state_desc AS [state], recovery_model_desc AS [recovery]
-    FROM sys.databases WHERE database_id > 4 ORDER BY name;"
+    FROM sys.databases WHERE database_id > 4 ORDER BY name;" </dev/null
 }
 
 # --- main --------------------------------------------------------------------

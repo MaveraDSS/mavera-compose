@@ -499,6 +499,7 @@ docker compose up -d --force-recreate mssql-init && docker compose logs -f mssql
 | `no Databases.zip in the project directory` | The zip was not committed, or Dokploy cloned before it was pushed. |
 | `RESTORE ... could not be opened. Operating system error 5` | Permissions on the backup volume. `sqlserver` runs as root and mounts it read-only; check `docker compose -f docker-compose.infra.yml exec sqlserver ls -la /var/opt/mssql/backups`. |
 | Restore runs on every deploy | `SQL_RESTORE_FORCE` was left at `true`. |
+| `mssql-init` never gets past `[restore] <db> <- …`, and `sys.dm_exec_requests` on `sqlserver` shows no RESTORE | `mssql-restore.sh` deadlocked on a `sqlcmd` run inside its file-list loop, which read the loop's stdin. Fixed: the per-file check no longer queries inside the loop, and every `sqlcmd` gets `</dev/null`. Pull the fix, then `docker compose -f docker-compose.infra.yml up -d --force-recreate mssql-init`. |
 
 ### Using an existing SQL instance instead
 
