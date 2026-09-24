@@ -87,8 +87,8 @@ Open http://localhost:3002 and log in with a dev02 user (Okta email code).
 `setup` (DSS-5606) does what used to be four manual steps, and skips whatever is already done:
 
 1. **Repos**: clones verisk-nordics-frontend and mavera-libertine next to mavera-compose on the branch the
-   manifest names (libertine: `dss-5583_local-dev-cors` until that change is merged), plus any `--local`
-   service. An existing clone is never switched; setup tells you when it is on another branch.
+   manifest names (`develop`), plus any `--local` service. An existing clone is never switched; setup tells
+   you when it is on another branch.
 2. **Frontend packages**: `corepack pnpm install --frozen-lockfile`, only when `node_modules` is missing or
    `pnpm-lock.yaml` changed since the last install (a few minutes the first time).
 3. **Secrets**: writes `secrets.json` from `secrets.example.json`, taking values from two sources in
@@ -247,6 +247,9 @@ devenv/
 - Login accepts the email code and then fails — `OKTA_CLIENT_SECRET` in `secrets.json` is wrong or blank;
   the real error is in `.state/logs/frontend.log`. Restart after fixing (`down`, `up`).
 - Libertine's first proxied request after start can time out once; devenv retries, browsers just reload.
+- The browser console shows CORS errors for `localhost:5151` — your libertine checkout predates its
+  Development-only CORS policy (DSS-5583). `git -C mavera-libertine checkout develop && git -C mavera-libertine
+  pull`, then `down` and `up`.
 - `document-service ... HTTP 503, degraded: s3 (...)` — expected while the `S3_*` keys in `secrets.json` are
   blank; the service serves everything except document content. Fill the keys (DSS-5604) and restart to clear
   it. Each health probe takes up to 30 s in this state because the AWS SDK looks for credentials first, so

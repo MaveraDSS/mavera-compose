@@ -35,7 +35,7 @@
   },
   "gateway": {
     "repo": "mavera-libertine",
-    "branch": "dss-5583_local-dev-cors",
+    "branch": "develop",
     "project": "LibertineWeb",
     "port": 5151,
     "configTemplate": "LibertineWeb/appsettings.json",
