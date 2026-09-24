@@ -75,9 +75,12 @@ Three commands, in a folder that will hold the repos side by side (for example `
 ```
 git clone https://github.com/MaveraDSS/mavera-compose.git
 cd mavera-compose/devenv
-dotnet run --project src/Devenv -- setup
+dotnet run --project src/Devenv -- setup --secrets ~/Downloads/secrets.json
 dotnet run --project src/Devenv -- up -d
 ```
+
+`~/Downloads/secrets.json` is the filled file from the **devenv secrets.json** Document in the k8s-secrets-dev
+vault in 1Password. Without `--secrets`, setup asks for the required values one by one.
 
 Open http://localhost:3002 and log in with a dev02 user (Okta email code).
 
