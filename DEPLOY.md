@@ -577,6 +577,104 @@ A `[entrypoint] UNSET` block names placeholders that nothing defined; blank Okta
 entries are expected, anything else is a real gap. A literal `$Placeholder` reaching the app means the
 entrypoint did not run at all — see *Troubleshooting*.
 
+### 8d. More than one project: point each app stack at its own set
+
+Every project shares **one** infra stack. A second project is another entry in that stack's lists,
+**never a second infra stack**. Every infra container registers a fixed name on `dokploy-network`
+(`sqlserver`, `mongo`, `rabbitmq`, `redis`, `minio`). A second infra stack registers the same names
+again, and Docker's DNS then alternates between the two copies. Each init job's calls land on either
+server, so catalogs end up split across both and each server looks half-provisioned. To check:
+`docker run --rm --network dokploy-network busybox nslookup sqlserver` must return **exactly one**
+address.
+
+**1. In the infra stack**, list every project in all three variables, then redeploy:
+
+```
+SQL_PROJECTS=mavera1-:mavera1-user:<sql-pw-1>,mavera2-:mavera2-user:<sql-pw-2>
+MONGO_PROJECTS=mavera1-:mavera1-mongo:<mongo-pw-1>,mavera2-:mavera2-mongo:<mongo-pw-2>
+RABBITMQ_VHOSTS=mavera1:mavera1:<mq-pw-1>,mavera2:mavera2:<mq-pw-2>
+# false when every app stack sets a DB_PREFIX; see below
+SQL_DEFAULT_CATALOGS=false
+```
+
+- **Prefix:** field 1 is used verbatim, so `mavera2-` gives `mavera2-vera-dev02` and
+  `mavera2-audit-logs`. Use the *same* prefix in `SQL_PROJECTS` and `MONGO_PROJECTS`, because one
+  `DB_PREFIX` names both.
+- **Passwords:** SQL logins are created with CHECK_POLICY on, so a weak password fails the deploy.
+  Passwords must not contain `,` or `$`.
+- **`SQL_DEFAULT_CATALOGS`:**
+  - `true` (the default) also restores and creates the **unprefixed** set (`vera-dev02`,
+    `MaveraInboxOutbox`, …), which is what an app stack with an empty `DB_PREFIX` connects to.
+  - `false` skips that set and saves ~450 MB. Use it when every app stack has a prefix.
+  - Switching to `false` never drops a set that already exists. It affects SQL Server only: Mongo
+    always keeps the shared `MONGO_USER`'s unprefixed databases, and RabbitMQ always keeps `/`.
+
+Wait for `mssql-init` and `mongo-init` to exit 0, and check that their logs show a
+`DB_PREFIX=<prefix>` line for every project. Also check that `rabbitmq-init` logs
+`vhost ready: <vhost>` for each one. App stacks cannot `depends_on` another stack, so one that starts
+earlier crash-loops until its set exists.
+
+**2. In each project's app stack**, which must have *Isolated Deployments* **off** so it stays on
+`dokploy-network`, set that project's values. For `mavera2`:
+
+```
+# SQL Server -- the login from its SQL_PROJECTS entry
+DB_SERVER=sqlserver
+DB_PREFIX=mavera2-
+DB_USER=mavera2-user
+DB_PASS=<sql-pw-2>
+
+# MongoDB -- the user from its MONGO_PROJECTS entry
+MONGO_USER=mavera2-mongo
+MONGO_PASS=<mongo-pw-2>
+
+# RabbitMQ -- the vhost and user from its RABBITMQ_VHOSTS entry
+RABBITMQ_VHOST=mavera2
+RABBITMQ_USER=mavera2
+RABBITMQ_PASS=<mq-pw-2>
+
+# Redis: blank = the shared `redis`. For a private instance use
+# REDIS_HOST=mavera2-redis and add project-redis to COMPOSE_PROFILES.
+REDIS_HOST=
+```
+
+`docker-compose.apps.yml` turns these into the placeholders the services read. Every service then
+reaches `sqlserver` / `mongo` / `rabbitmq` by name and lands on its own set:
+
+| Placeholder | Value |
+|---|---|
+| `ConnectionStrings_DB_Server` / `_User` | `sqlserver` / `mavera2-user` |
+| `ConnectionStrings_DB_Name` | `mavera2-vera-dev02` |
+| `ConnectionStrings_DB_InboxOutbox` | `mavera2-MaveraInboxOutbox` (and so on, 7 catalogs) |
+| `ConnectionStrings_DB_Mongo_AuditLoger` | `mavera2-audit-logs` (and so on, 11 databases) |
+| `MessageBroker_VirtualHost` / `_Username` | `mavera2` / `mavera2` |
+
+Here `DB_PASS` is just this login's password. In the infra stack the same variable is `sa`'s password.
+
+**What a project login can and cannot do.** `mavera2-user` owns its seven catalogs, so it is `dbo`
+in each and EF Core migrations work. It is denied everything else: it cannot open, or even list,
+`mavera1-*`, cannot create databases and cannot see other logins. The Mongo user has `readWrite` on
+its eleven databases only, and the broker user is limited to its own vhost.
+
+**What a mismatch looks like:**
+
+| Symptom | Cause |
+|---|---|
+| `Cannot open database` | `DB_PREFIX` doesn't match a `SQL_PROJECTS` prefix exactly. |
+| `Authentication failed` on Mongo | `MONGO_USER`/`MONGO_PASS` don't match a `MONGO_PROJECTS` entry. |
+| `ACCESS_REFUSED` on RabbitMQ | `RABBITMQ_VHOST`/`RABBITMQ_USER` don't match a `RABBITMQ_VHOSTS` entry. |
+
+**Check the login from the network**, the same way the services reach it:
+
+```bash
+docker run --rm --network dokploy-network mcr.microsoft.com/mssql/server:2022-latest \
+  /opt/mssql-tools18/bin/sqlcmd -C -S sqlserver -U mavera2-user -P '<sql-pw-2>' \
+  -Q "SET NOCOUNT ON; SELECT name FROM sys.databases"
+# -> master, tempdb and the seven mavera2-* catalogs; nothing from mavera1-
+```
+
+Phase 10 *If you run more than one project* has the full set of cross-project isolation checks.
+
 ---
 
 ## Phase 8.5 — Preview deployments (optional, per repo)
@@ -877,6 +975,7 @@ as `admin` with `SEQ_ADMIN_PASS`.
 | A service resolves to two addresses | A preview is claiming a production alias. The preview-host Application must have **no** `Aliases` in its Swarm network setting. See README *Why two Applications per repo*. |
 | 502/503 from the gateway for one service | That Application lost its alias, or was provisioned without one. Re-run `provision.py --only <svc> --apply`. |
 | A PR opens but no preview appears | The PR's **base** branch must equal the preview-host Application's configured branch, previews must be active on it, and the author needs write access to the repo. |
+| Project catalogs missing, split across servers, or a fresh infra stack shows no user databases | A second infra stack was deployed, so `sqlserver`, `mongo` and `rabbitmq` each resolve to two containers. Keep one infra stack, delete the other (with its volumes), and list every project in `SQL_PROJECTS` / `MONGO_PROJECTS` / `RABBITMQ_VHOSTS`. See Phase 8d. |
 | `storage-service` / `mavera-ocr` fail on queries | `MaveraStorageOperations` / `MaveraOcrOperations` are empty; no backup was supplied for them. |
 
 ---
