@@ -207,8 +207,8 @@ service and a token-endpoint error in Seq, not a startup crash.
 | `MSSQL_MEMORY_LIMIT_MB` | `2048` | caps SQL Server so it cannot starve the 29 services. Raise to ~6144 on a 32 GB box once things are stable. |
 | `SQL_RESTORE_ENABLED` | `true` | restores the three data-bearing databases from `Databases.zip` on first deploy (Phase 7) |
 | `SQL_RESTORE_FORCE` | `false` | **destructive.** `true` re-restores over the live databases on every deploy |
-| `BRANCH` | `release/v.be-2026-04-01` | the branch built for the 26 service repos that have it |
-| `BRANCH_FALLBACK` | `develop` | used by the three repos that have not cut that branch: `mavera-identity-server`, `mavera-news-manager`, `mavera-audit` |
+| `BRANCH` | `release/v.be-2026-04-01` | the branch built for every service repo that has it |
+| `BRANCH_FALLBACK` | `develop` | built by any repo that lacks `BRANCH`, via the `BRANCH_<REPO>` lines that `scripts/resolve-branches.py` generates. Re-run it whenever either knob changes; see *Ongoing* |
 | `TAG` | `release-v.be-2026-04-01` | names the locally built images; Docker tags cannot contain `/` |
 
 ### Turn on env-file generation — this is the step that trips people up
@@ -987,15 +987,14 @@ as `admin` with `SEQ_ADMIN_PASS`.
   compose service. `docker-compose.infra.yml` and `docker-compose.apps.yml` are generated from it and
   committed; if you change a service definition rather than a placeholder, regenerate them.
 - **Redeploys** rebuild only the service repos whose branch head moved. Keep the build cache.
-- **Bumping to the next release branch**: set `BRANCH`, and first re-check which repos still need
-  `BRANCH_FALLBACK`. Anything listed has not cut the branch; anything that has dropped off can move
-  back onto `${BRANCH}`:
+- **Changing `BRANCH` or `BRANCH_FALLBACK`** (a new release, or a feature branch that only some
+  repos have): regenerate the per-repo overrides, then paste the printed block into the Environment
+  tab over the old one and redeploy. Repos that lack `BRANCH` get `BRANCH_<REPO>=<BRANCH_FALLBACK>`;
+  every other repo builds `BRANCH`. A non-zero exit lists the repos that have neither branch.
 
   ```bash
-  REL='release%2Fv.be-2026-04-01'   # url-encode the '/'
-  for r in $(grep -oE 'MaveraDSS/[a-z0-9-]+' docker-compose.yml | sort -u); do
-    gh api "repos/$r/branches/$REL" >/dev/null 2>&1 || echo "fallback: $r"
-  done
+  BRANCH=release/v.be-2026-09-29 BRANCH_FALLBACK=develop GH_PAT=... \
+    python scripts/resolve-branches.py
   ```
 
 - **Adding a service**: add it to `docker-compose.yml`, regenerate `docker-compose.apps.yml`, commit,

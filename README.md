@@ -823,14 +823,25 @@ to switch to pull-only — see below.
 
 ### 2b. Which branch each repo is built from
 
-`BRANCH` is the branch built for every service repo that has it — currently
-`release/v.be-2026-04-01`, which 26 of the 29 repos carry.
+`BRANCH` is the branch built for every service repo that has it. Any repo that does not have it
+builds `BRANCH_FALLBACK` (`develop`) instead.
 
-Three do not, and their build contexts read `BRANCH_FALLBACK` (`develop`) instead:
-`mavera-identity-server`, `mavera-news-manager`, `mavera-audit`. Compose has no conditionals, so
-the split is expressed as two knobs rather than resolved at deploy time. Re-check membership
-before bumping `BRANCH` — the command is in the `docker-compose.yml` header and in DEPLOY.md's
-*Ongoing* section — and move any repo that has caught up back onto `${BRANCH}`.
+Compose has no conditionals, and BuildKit fails outright on a ref that does not exist, so the
+choice is made before the deploy. In `docker-compose.apps.yml` each build context reads
+`#${BRANCH_<REPO>:-${BRANCH:-develop}}`, where `<REPO>` is the repo name without `mavera-`,
+upper-cased, with dashes turned into underscores (`mavera-document-service` → `BRANCH_DOCUMENT_SERVICE`).
+`scripts/resolve-branches.py` asks GitHub which repos lack `BRANCH` and prints a
+`BRANCH_<REPO>=<BRANCH_FALLBACK>` line for each one:
+
+```bash
+BRANCH=my-feature python scripts/resolve-branches.py            # print the block
+python scripts/resolve-branches.py --write .env                  # or update .env in place
+```
+
+Paste the block into Dokploy's Environment tab, replacing the previous one, and redeploy. The script
+exits 1 and names the repos that have neither branch, since the build would fail on those.
+`docker-compose.yml`, the local all-in-one stack, still hardwires the three original fallback repos to
+`BRANCH_FALLBACK`.
 
 `TAG` is separate and names the locally built images. It is `release-v.be-2026-04-01`, dashed
 because Docker tags cannot contain `/`.

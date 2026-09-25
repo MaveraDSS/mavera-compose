@@ -25,6 +25,11 @@
 # Env-file generation must be enabled in Dokploy, or every ${VAR:?} fails at
 # parse time. See DEPLOY.md.
 #
+# WHICH BRANCH IS BUILT: every context is `#${BRANCH_<REPO>:-${BRANCH:-develop}}`.
+# A repo builds BRANCH unless its BRANCH_<REPO> is set; scripts/resolve-branches.py
+# sets it to BRANCH_FALLBACK for each repo that lacks BRANCH. Re-run it and
+# update the Environment tab whenever BRANCH or BRANCH_FALLBACK changes.
+#
 # The three `extras` services at the bottom are still commented out. Their
 # networks blocks have been updated, but their depends_on lines have not --
 # delete those if you enable one, since the infra services are in another
@@ -329,8 +334,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-identity-server:${TAG:-develop}
     build:
-      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-identity-server.git#${BRANCH_FALLBACK:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-identity-server.git#${BRANCH_IDENTITY_SERVER:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -365,7 +369,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-libertine:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-libertine.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-libertine.git#${BRANCH_LIBERTINE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -394,7 +398,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-identity-client:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-identity-client.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-identity-client.git#${BRANCH_IDENTITY_CLIENT:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -413,7 +417,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-user-service:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-user-service.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-user-service.git#${BRANCH_USER_SERVICE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -432,7 +436,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-caregivers:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-caregivers.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-caregivers.git#${BRANCH_CAREGIVERS:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -451,7 +455,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-notification-service:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-notification-service.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-notification-service.git#${BRANCH_NOTIFICATION_SERVICE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -470,7 +474,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-medical-advisor-network:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-medical-advisor-network.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-medical-advisor-network.git#${BRANCH_MEDICAL_ADVISOR_NETWORK:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -489,7 +493,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-kuralink:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-kuralink.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-kuralink.git#${BRANCH_KURALINK:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -509,7 +513,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-dashboard:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-dashboard.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-dashboard.git#${BRANCH_DASHBOARD:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -525,8 +529,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-news-manager:${TAG:-develop}
     build:
-      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-news-manager.git#${BRANCH_FALLBACK:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-news-manager.git#${BRANCH_NEWS_MANAGER:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -542,8 +545,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-audit:${TAG:-develop}
     build:
-      # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-audit.git#${BRANCH_FALLBACK:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-audit.git#${BRANCH_AUDIT:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -559,7 +561,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-background-task-schduler:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-background-task-schduler.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-background-task-schduler.git#${BRANCH_BACKGROUND_TASK_SCHDULER:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -575,7 +577,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-reflection:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-reflection.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-reflection.git#${BRANCH_REFLECTION:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["platform", "all"]
     environment:
@@ -595,7 +597,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-evaluation-service:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-evaluation-service.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-evaluation-service.git#${BRANCH_EVALUATION_SERVICE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["evaluation", "all"]
     environment:
@@ -614,7 +616,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-enhanced-patient-view:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-enhanced-patient-view.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-enhanced-patient-view.git#${BRANCH_ENHANCED_PATIENT_VIEW:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["evaluation", "all"]
     environment:
@@ -633,7 +635,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-fkassan-service:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-fkassan-service.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-fkassan-service.git#${BRANCH_FKASSAN_SERVICE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["evaluation", "all"]
     environment:
@@ -656,7 +658,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-document-service:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-document-service.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-document-service.git#${BRANCH_DOCUMENT_SERVICE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["documents", "all"]
     environment:
@@ -675,7 +677,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-storage-service:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-storage-service.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-storage-service.git#${BRANCH_STORAGE_SERVICE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["documents", "all"]
     environment:
@@ -698,7 +700,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-file-conversion-service:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-file-conversion-service.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-file-conversion-service.git#${BRANCH_FILE_CONVERSION_SERVICE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["documents", "all"]
     environment:
@@ -714,7 +716,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-pdf-generator-service:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-pdf-generator-service.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-pdf-generator-service.git#${BRANCH_PDF_GENERATOR_SERVICE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["documents", "all"]
     environment:
@@ -731,7 +733,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ocr:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ocr.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ocr.git#${BRANCH_OCR:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["documents", "all"]
     environment:
@@ -753,7 +755,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-client-relevance-score:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-client-relevance-score.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-client-relevance-score.git#${BRANCH_AI_CLIENT_RELEVANCE_SCORE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["ai", "all"]
     environment:
@@ -769,7 +771,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-document-anonymize:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-anonymize.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-anonymize.git#${BRANCH_AI_DOCUMENT_ANONYMIZE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["ai", "all"]
     environment:
@@ -785,7 +787,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-document-classifier:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-classifier.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-classifier.git#${BRANCH_AI_DOCUMENT_CLASSIFIER:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["ai", "all"]
     environment:
@@ -804,7 +806,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-document-processor:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-processor.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-processor.git#${BRANCH_AI_DOCUMENT_PROCESSOR:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["ai", "all"]
     environment:
@@ -823,7 +825,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-document-summaries:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-summaries.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-document-summaries.git#${BRANCH_AI_DOCUMENT_SUMMARIES:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["ai", "all"]
     environment:
@@ -842,7 +844,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-identitycheck-processor:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-identitycheck-processor.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-identitycheck-processor.git#${BRANCH_AI_IDENTITYCHECK_PROCESSOR:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["ai", "all"]
     environment:
@@ -861,7 +863,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-journalevents-classifier:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-journalevents-classifier.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-journalevents-classifier.git#${BRANCH_AI_JOURNALEVENTS_CLASSIFIER:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["ai", "all"]
     environment:
@@ -880,7 +882,7 @@ services:
     <<: *service-base
     image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-ai-timeline:${TAG:-develop}
     build:
-      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-timeline.git#${BRANCH:-develop}
+      context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-ai-timeline.git#${BRANCH_AI_TIMELINE:-${BRANCH:-develop}}
       dockerfile: dockerfile/Dockerfile
     profiles: ["ai", "all"]
     environment:
@@ -909,8 +911,7 @@ services:
   #   <<: *service-base
   #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-translation-service:${TAG:-develop}
   #   build:
-  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
-  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-translation-service.git#${BRANCH_FALLBACK:-develop}
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-translation-service.git#${BRANCH_TRANSLATION_SERVICE:-${BRANCH:-develop}}
   #     dockerfile: dockerfile/Dockerfile
   #   profiles: ["extras", "all"]
   #   environment:
@@ -925,8 +926,7 @@ services:
   #   <<: *service-base
   #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-client-webhook:${TAG:-develop}
   #   build:
-  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
-  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-webhook.git#${BRANCH_FALLBACK:-develop}
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-webhook.git#${BRANCH_CLIENT_WEBHOOK:-${BRANCH:-develop}}
   #     dockerfile: dockerfile/Dockerfile
   #   profiles: ["extras", "all"]
   #   environment:
@@ -941,8 +941,7 @@ services:
   #   <<: *service-base
   #   image: ${ACR:-mavera.azurecr.io}/mavera/${ACR_ENV:-dev}/mavera-client-external-service:${TAG:-develop}
   #   build:
-  #     # No release/v.be-2026-04-01 in this repo as of 2026-09-05 -- falls back.
-  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-external-service.git#${BRANCH_FALLBACK:-develop}
+  #     context: https://x-access-token:${GH_PAT}@github.com/MaveraDSS/mavera-client-external-service.git#${BRANCH_CLIENT_EXTERNAL_SERVICE:-${BRANCH:-develop}}
   #     dockerfile: dockerfile/Dockerfile
   #   profiles: ["extras", "all"]
   #   environment:
