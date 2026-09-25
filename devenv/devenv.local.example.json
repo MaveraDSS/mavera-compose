@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to devenv.local.json (gitignored) only if the defaults do not fit. reposRoot defaults to the folder above mavera-compose; developerName to your OS user name. dotnetX64: path of the x64 dotnet host for services marked requiresX64 on an arm64 Mac (default /usr/local/share/dotnet/x64/dotnet).",
+  "reposRoot": null,
+  "environment": "dev02",
+  "developerName": null,
+  "localServices": [],
+  "infra": true,
+  "otlpEndpoint": "http://localhost:4317",
+  "dotnetX64": null
+}

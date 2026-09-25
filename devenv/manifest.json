@@ -1,0 +1,491 @@
+{
+  "_comment": "What exists: the frontend, the gateway (libertine) and every backend service. Ports are assigned here, not taken from launchSettings, because devenv sets ASPNETCORE_URLS itself. A service needs `project` (its web .csproj) before it can run locally; `placeholders` says how the $Tokens in every committed appsettings.json get their values (see README, 'How a service config is rendered').",
+  "gitBase": "https://github.com/MaveraDSS/",
+  "frontend": {
+    "repo": "verisk-nordics-frontend",
+    "branch": "develop",
+    "workingDir": "apps/dss",
+    "port": 3002,
+    "command": [
+      "corepack",
+      "pnpm",
+      "exec",
+      "next",
+      "dev",
+      "-p",
+      "3002"
+    ],
+    "envFile": ".env",
+    "healthPath": "/",
+    "secrets": {
+      "required": [
+        "NEXTAUTH_SECRET",
+        "NEXT_PUBLIC_CLIENT_SECRET",
+        "NEXT_PUBLIC_PDFTRON_LICENSE_KEY",
+        "NEXT_PUBLIC_ASSETS_BASE",
+        "OKTA_CLIENT_SECRET"
+      ],
+      "optional": [
+        "MONGO_BRIDGE_DEV_AUTH_TOKEN",
+        "AZURE_AD_TENANT_ID",
+        "AZURE_AD_CLIENT_ID",
+        "AZURE_AD_CLIENT_SECRET"
+      ]
+    }
+  },
+  "gateway": {
+    "repo": "mavera-libertine",
+    "branch": "develop",
+    "project": "LibertineWeb",
+    "port": 5151,
+    "configTemplate": "LibertineWeb/appsettings.json",
+    "configOutput": "LibertineWeb/appsettings.Development.json",
+    "healthPath": "/libertine/swagger/index.html",
+    "edgeHealthPath": "/Vera/UserService/health",
+    "edgeRoutes": [
+      "Vera",
+      "connect",
+      ".well-known",
+      "ReflectionService",
+      "identity-client"
+    ],
+    "publicClusters": [
+      "mavera-document-service"
+    ],
+    "serviceSettings": {
+      "Monolith": {
+        "ingress": "public"
+      },
+      "DocumentManagement": {
+        "ingress": "public"
+      },
+      "MedicalAdvisorNetwork": {
+        "path": "Vera/MedicalAdvisorNetwork/"
+      }
+    },
+    "maxRequestBodySize": 524288000,
+    "oktaInternalSecretKey": "OKTA_INTERNAL_SECRET"
+  },
+  "placeholders": {
+    "_comment": "Layers, later wins: x-placeholders defaults from `source`, environments/<env>.json placeholders, `local`, computed (ServiceSettings_ENV, Tracing_Connection_String), then `secrets` from secrets.json. `hosts` re-points cluster hostnames: @identity/@internal/@public are the environment's URLs, anything else is literal. A service can override single placeholders with its own `placeholders` map (e.g. CacheType: inmemory for a service that supports it).",
+    "source": "../docker-compose.yml",
+    "local": {
+      "MessageBroker_Username": "mavera",
+      "MessageBroker_Password": "mavera",
+      "MessageBroker_VirtualHost": "/",
+      "RedisInstance": "localhost",
+      "RedisPort": "6379",
+      "CacheType": "redis",
+      "Log_Level": "Information",
+      "Log_IncludeScopes": "false",
+      "MailSettings_MailEnvironment": "Development",
+      "MailSettings_BccMonitoringEnabled": "false",
+      "ServiceSettings_Services_WebhookSubscriptionService": "mavera-client-webhook"
+    },
+    "secrets": {
+      "ConnectionStrings_DB_Pass": {
+        "key": "DB_PASSWORD",
+        "required": true
+      },
+      "Okta_InternalServices_Secret": {
+        "key": "OKTA_INTERNAL_SECRET",
+        "required": true
+      },
+      "CryptoSettings_CryptoIV": {
+        "key": "CRYPTO_IV"
+      },
+      "CryptoSettings_CryptoKey": {
+        "key": "CRYPTO_KEY"
+      },
+      "SmbSettings_Server": {
+        "key": "SMB_SERVER"
+      },
+      "SmbSettings_Share": {
+        "key": "SMB_SHARE"
+      },
+      "SmbSettings_UserName": {
+        "key": "SMB_USERNAME"
+      },
+      "SmbSettings_Password": {
+        "key": "SMB_PASSWORD"
+      },
+      "BucketProviderUrl": {
+        "key": "S3_ENDPOINT_URL"
+      },
+      "BucketProviderKey": {
+        "key": "S3_ACCESS_KEY_ID"
+      },
+      "BucketProviderSecret": {
+        "key": "S3_SECRET_ACCESS_KEY"
+      },
+      "MailSettings_ApiKey": {
+        "key": "MAIL_API_KEY"
+      },
+      "MailSettings_ApiKeyId": {
+        "key": "MAIL_API_KEY_ID"
+      },
+      "SmsSettings_UserName": {
+        "key": "SMS_USERNAME"
+      },
+      "SmsSettings_Password": {
+        "key": "SMS_PASSWORD"
+      },
+      "InternalServicesSettings_Secret": {
+        "key": "INTERNAL_SERVICES_SECRET"
+      },
+      "InternalServicesSettings_SystemAccountUserId": {
+        "key": "SYSTEM_ACCOUNT_USER_ID"
+      },
+      "Okta_Integration_ClientId": {
+        "key": "OKTA_INTEGRATION_CLIENT_ID"
+      },
+      "Bucket_DocumentsBucketName": {
+        "key": "S3_BUCKET_NAME"
+      },
+      "Bucket_Region": {
+        "key": "S3_REGION"
+      },
+      "MailSettings_TestingEmailAddress": {
+        "key": "MAIL_TEST_ADDRESS"
+      }
+    },
+    "hosts": {
+      "rabbitmq.rabbitmq.svc.cluster.local": "localhost",
+      "mavera-identity-server": "@identity",
+      "mavera-translation-service": "@internal"
+    }
+  },
+  "services": [
+    {
+      "name": "evaluation-service",
+      "repo": "mavera-evaluation-service",
+      "project": "EvaluationService/EvaluationService.csproj",
+      "port": 5201,
+      "publicPrefix": "Vera/EvaluationService",
+      "clusterIds": [
+        "mavera-evaluation-service"
+      ],
+      "serviceSettingsNames": [
+        "EvaluationService"
+      ],
+      "healthPath": "/Vera/EvaluationService/health",
+      "migrations": "dbup",
+      "migrationsFolder": "_Migrations",
+      "migrationsJournal": "SchemaVersions",
+      "connectionStringName": "MaveraContext",
+      "usesMessageBroker": true,
+      "requiresX64": true,
+      "notes": "Carries x64-only Service Fabric remoting assemblies (via Vera.Common / Mavera.Access.*): on an arm64 Mac devenv starts it with the x64 .NET host."
+    },
+    {
+      "name": "user-service",
+      "repo": "mavera-user-service",
+      "project": "UserService.Api/UserService.Api.csproj",
+      "port": 5202,
+      "publicPrefix": "Vera/UserService",
+      "clusterIds": [
+        "mavera-user-service"
+      ],
+      "serviceSettingsNames": [
+        "UserService"
+      ],
+      "healthPath": "/Vera/UserService/health",
+      "migrations": "dbup",
+      "migrationsFolder": "_Migrations",
+      "migrationsJournal": "UserServiceSchemaVersions",
+      "connectionStringName": "MaveraContext",
+      "usesMessageBroker": true,
+      "requiresX64": true,
+      "notes": "Carries x64-only Service Fabric remoting assemblies (via Vera.Common / Mavera.Access.*): on an arm64 Mac devenv starts it with the x64 .NET host."
+    },
+    {
+      "name": "document-service",
+      "repo": "mavera-document-service",
+      "project": "Mavera.DocumentService/DocumentService/DocumentService.csproj",
+      "port": 5203,
+      "publicPrefix": "Vera/DocumentService",
+      "clusterIds": [
+        "mavera-document-service"
+      ],
+      "serviceSettingsNames": [
+        "DocumentManagement"
+      ],
+      "healthPath": "/Vera/DocumentService/health",
+      "optionalHealthChecks": {
+        "s3": {
+          "secrets": ["S3_ENDPOINT_URL", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET_NAME"],
+          "note": "object storage not configured (DSS-5604), so documents cannot be opened or uploaded through the local document-service; everything else works"
+        }
+      },
+      "migrations": "dbup",
+      "migrationsFolder": "_Migrations",
+      "migrationsJournal": "DocumentServiceSchemaVersions",
+      "connectionStringName": "MaveraContext",
+      "usesMessageBroker": true,
+      "requiresX64": true,
+      "notes": "Carries x64-only Service Fabric assemblies (System.Fabric via Vera.Common): on an arm64 Mac devenv starts it with the x64 .NET host."
+    },
+    {
+      "name": "medical-advisor-network",
+      "repo": "mavera-medical-advisor-network",
+      "project": "Mavera.MedicalAdvisorNetwork.Api/Mavera.MedicalAdvisorNetwork.Api.csproj",
+      "port": 5204,
+      "publicPrefix": "Vera/MedicalAdvisorNetwork",
+      "remotePath": "Vera/MedicalAdvisorNetwork",
+      "clusterIds": [
+        "mavera-medical-advisor-network"
+      ],
+      "serviceSettingsNames": [
+        "MedicalAdvisorNetwork"
+      ],
+      "healthPath": "/Vera/MedicalAdvisorNetwork/health"
+    },
+    {
+      "name": "dashboard",
+      "repo": "mavera-dashboard",
+      "project": null,
+      "port": 5205,
+      "publicPrefix": "Vera/Dashboard",
+      "clusterIds": [
+        "mavera-dashboard"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "caregivers",
+      "repo": "mavera-caregivers",
+      "project": "Mavera.Caregivers/Caregivers/Caregivers.csproj",
+      "port": 5206,
+      "remotePath": "caregivers",
+      "clusterIds": [
+        "mavera-caregivers"
+      ],
+      "serviceSettingsNames": [],
+      "healthPath": "/caregivers/health",
+      "migrations": "fluentmigrator",
+      "migrationsFolder": "Migrations",
+      "migrationsJournal": "VersionInfo",
+      "connectionStringName": "CaregiverContext",
+      "usesMessageBroker": true,
+      "notes": "FluentMigrator with MigrateUp pinned in Migrations/MigrationExtension.cs; the DbContext also calls EnsureCreated()."
+    },
+    {
+      "name": "identity-client",
+      "repo": "mavera-identity-client",
+      "project": null,
+      "port": 5207,
+      "publicPrefix": "identity-client",
+      "clusterIds": [
+        "identity-client-service"
+      ],
+      "serviceSettingsNames": [],
+      "notes": "The frontend calls /identity-client/** server-side during login, so this is also an edge prefix."
+    },
+    {
+      "name": "enhanced-patient-view",
+      "repo": "mavera-enhanced-patient-view",
+      "project": null,
+      "port": 5208,
+      "clusterIds": [
+        "mavera-enhanced-patient-view"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "timeline",
+      "repo": "mavera-ai-timeline",
+      "project": null,
+      "port": 5209,
+      "clusterIds": [
+        "mavera-timeline-service"
+      ],
+      "serviceSettingsNames": [
+        "Timeline"
+      ]
+    },
+    {
+      "name": "ai-document-processor",
+      "repo": "mavera-ai-document-processor",
+      "project": null,
+      "port": 5210,
+      "clusterIds": [
+        "mavera-ai-document-processor"
+      ],
+      "serviceSettingsNames": [
+        "DocumentProcessor"
+      ]
+    },
+    {
+      "name": "ai-document-classifier",
+      "repo": "mavera-ai-document-classifier",
+      "project": null,
+      "port": 5211,
+      "clusterIds": [
+        "mavera-document-classifier"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "ai-document-summaries",
+      "repo": "mavera-ai-document-summaries",
+      "project": null,
+      "port": 5212,
+      "clusterIds": [
+        "mavera-document-summaries-service"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "fkassan",
+      "repo": "mavera-fkassan-service",
+      "project": null,
+      "port": 5213,
+      "clusterIds": [
+        "mavera-fkassan-service"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "audit",
+      "repo": "mavera-audit",
+      "project": null,
+      "port": 5214,
+      "clusterIds": [
+        "mavera-audit-service"
+      ],
+      "serviceSettingsNames": [],
+      "usesMessageBroker": true
+    },
+    {
+      "name": "pdf-generator",
+      "repo": "mavera-pdf-generator-service",
+      "project": null,
+      "port": 5215,
+      "clusterIds": [
+        "mavera-pdf-generator-service"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "ocr",
+      "repo": "mavera-ocr",
+      "project": null,
+      "port": 5216,
+      "clusterIds": [
+        "OcrService"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "ai-identitycheck-processor",
+      "repo": "mavera-ai-identitycheck-processor",
+      "project": null,
+      "port": 5217,
+      "clusterIds": [
+        "mavera-identity-check"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "kuralink",
+      "repo": "mavera-kuralink",
+      "project": null,
+      "port": 5218,
+      "clusterIds": [
+        "mavera-kuralink"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "news-manager",
+      "repo": "mavera-news-manager",
+      "project": null,
+      "port": 5219,
+      "clusterIds": [
+        "mavera-news-manager"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "storage-service",
+      "repo": "mavera-storage-service",
+      "project": null,
+      "port": 5220,
+      "clusterIds": [
+        "mavera-storage-service"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "file-conversion",
+      "repo": "mavera-file-conversion-service",
+      "project": null,
+      "port": 5221,
+      "clusterIds": [
+        "mavera-file-conversion-service"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "ai-client-relevance-score",
+      "repo": "mavera-ai-client-relevance-score",
+      "project": null,
+      "port": 5222,
+      "clusterIds": [
+        "mavera-ai-client-relevance-score"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "ai-journalevents-classifier",
+      "repo": "mavera-ai-journalevents-classifier",
+      "project": null,
+      "port": 5223,
+      "clusterIds": [
+        "mavera-ai-journalevents-classifier"
+      ],
+      "serviceSettingsNames": []
+    },
+    {
+      "name": "reflection",
+      "repo": "mavera-reflection",
+      "project": null,
+      "port": 5224,
+      "publicPrefix": "ReflectionService",
+      "clusterIds": [],
+      "serviceSettingsNames": [],
+      "notes": "SignalR hub; the frontend opens a WebSocket to /ReflectionService/hubs/**, which is also an edge prefix."
+    },
+    {
+      "name": "notification-service",
+      "repo": "mavera-notification-service",
+      "project": "NotificationService/NotificationService.csproj",
+      "port": 5225,
+      "clusterIds": [],
+      "serviceSettingsNames": [],
+      "healthPath": "/internal-notification/health",
+      "usesMessageBroker": true,
+      "sendsMail": true,
+      "notes": "Sends mail through SendGrid. Outside MailEnvironment Production/Demo every mail goes to MailSettings:TestingEmailAddress, which devenv fills from MAIL_TEST_ADDRESS; still needs --allow-mail to start."
+    },
+    {
+      "name": "background-task-scheduler",
+      "repo": "mavera-background-task-schduler",
+      "project": null,
+      "port": 5226,
+      "clusterIds": [],
+      "serviceSettingsNames": [],
+      "usesMessageBroker": true
+    },
+    {
+      "name": "integration",
+      "repo": "mavera-integration",
+      "project": "src/Mavera.Integration.Api/Mavera.Integration.Api.csproj",
+      "port": 5227,
+      "clusterIds": [],
+      "serviceSettingsNames": [],
+      "usesMessageBroker": true,
+      "notes": "Public integration API; not called by the DSS frontend, no health endpoint (port check only)."
+    }
+  ]
+}

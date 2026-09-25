@@ -1,0 +1,61 @@
+# Local infrastructure for services that run on the developer machine (DSS-5585).
+# Started by `devenv up` as compose project "mavera-devenv"; nothing here talks to any cluster.
+#
+#   rabbitmq  amqp://mavera:mavera@localhost:5672   management UI http://localhost:15672
+#   redis     localhost:6379
+#   jaeger    OTLP gRPC localhost:4317, OTLP HTTP localhost:4318, UI http://localhost:16686
+#
+# The images match the fleet compose file at the repo root (rabbitmq:3.13-management, redis:7-alpine).
+# A local service must always be pointed here, never at the cluster broker: document/evaluation/user
+# services start named consumers on connect and would steal real messages.
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    environment:
+      RABBITMQ_DEFAULT_USER: mavera
+      RABBITMQ_DEFAULT_PASS: mavera
+      RABBITMQ_DEFAULT_VHOST: "/"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Jaeger all-in-one accepts OTLP directly, so no separate collector is needed locally.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "16686:16686"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:14269/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  rabbitmq-data:
+  redis-data:

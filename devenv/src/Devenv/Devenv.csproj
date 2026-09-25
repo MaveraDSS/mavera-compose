@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <!-- Runs on any newer runtime too (a machine with only the .NET 10 SDK/runtime still works). -->
+    <RollForward>Major</RollForward>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>devenv</AssemblyName>
+    <RootNamespace>Devenv</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Packable as a .NET tool later: dotnet pack, then dotnet tool install with the nupkg folder as source. -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>devenv</ToolCommandName>
+    <PackageId>MaveraDSS.Devenv</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Local development environment for Mavera DSS: frontend and selected services on the developer machine, everything else on a remote environment.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Migration preflight: reads the DbUp journal table of the remote database before a local service may start. -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />
+  </ItemGroup>
+
+</Project>

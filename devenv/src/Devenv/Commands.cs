@@ -1,0 +1,630 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+
+namespace Devenv;
+
+public static class Commands
+{
+    // ---------------------------------------------------------------- setup
+
+    /// <summary>Everything a fresh machine needs before `up`, each step skipped when already done.</summary>
+    public static async Task<int> SetupAsync(Workspace ws, CliOptions o)
+    {
+        var m = ws.Manifest;
+        Console.WriteLine($"devenv setup  (repos in {ws.ReposRoot}, environment {ws.Environment.Name})");
+
+        Console.WriteLine("tools");
+        var tools = new[]
+        {
+            Preflight.ToolCheck("git", "git", "--version"),
+            Preflight.ToolCheck("dotnet", "dotnet", "--version"),
+            Preflight.ToolCheck("node", "node", "--version"),
+            Preflight.ToolCheck("corepack", "corepack", "--version"),
+        };
+        Preflight.Print(tools);
+        if (tools.Any(t => !t.Ok))
+        {
+            throw new DevenvException("install what is marked FAIL (README, Prerequisites), open a new terminal and run setup again");
+        }
+
+        Console.WriteLine("repos");
+        var enclosing = await Repos.EnclosingRepositoryAsync(ws.ReposRoot);
+        if (enclosing is not null)
+        {
+            throw new DevenvException(
+                $"the repos folder {ws.ReposRoot} is inside the git repository {enclosing}. devenv clones the frontend, libertine and the services " +
+                "side by side with mavera-compose, so mavera-compose must be cloned into a plain folder (for example ~/source/repos or C:\\source\\repos), " +
+                "or set reposRoot in devenv.local.json / --repos to one.");
+        }
+        var plan = Repos.Plan(m, ws.ReposRoot, ws.LocalServices, o.Branch);
+        await Repos.EnsureAsync(ws, plan, header: false);
+        var expected = new List<(string Repo, string Branch)> { (m.Frontend.Repo, m.Frontend.Branch), (m.Gateway.Repo, m.Gateway.Branch) };
+        expected.AddRange(ws.LocalServices.Select(s => (s.Repo, o.Branch ?? s.Branch)));
+        foreach (var (repo, branch) in expected.DistinctBy(e => e.Repo))
+        {
+            var path = ws.RepoPath(repo);
+            var current = await Repos.CurrentBranchAsync(path);
+            Console.WriteLine(current == branch || plan.Any(p => p.Repo == repo)
+                ? $"  {repo,-28} {path} @ {current ?? branch}"
+                : $"  {repo,-28} {path} @ {current ?? "?"}  (devenv expects {branch}; left as is, switch with `git -C {path} checkout {branch}` if you did not mean to be elsewhere)");
+        }
+
+        Console.WriteLine("frontend packages");
+        var frontendRepo = ws.RepoPath(m.Frontend.Repo);
+        var (needed, reason) = FrontendPackages.NeedsInstall(frontendRepo);
+        Console.WriteLine($"  {reason}");
+        if (needed)
+        {
+            await FrontendPackages.InstallAsync(frontendRepo);
+        }
+
+        Console.WriteLine("secrets");
+        // Hidden input needs a real console; a redirected stdin (CI, `echo | devenv setup`) means no prompting.
+        var interactive = !o.NoPrompt && !Console.IsInputRedirected;
+        var blankRequired = SecretsSetup.Run(ws, interactive, o.SecretsImport);
+
+        Console.WriteLine("claude code (optional)");
+        var claudeMd = Path.Combine(ws.ReposRoot, ReposRootClaudeMd.FileName);
+        Console.WriteLine(ReposRootClaudeMd.WriteIfMissing(m, ws.ReposRoot)
+            ? $"  wrote {claudeMd} (what this folder holds, how to work from it); open Claude Code in {ws.ReposRoot}"
+            : $"  {claudeMd} exists, left as is");
+        Console.WriteLine("  the dss plugin gives Claude Code the /dss:dev-env, /dss:repro, /dss:verify and /dss:ticket commands in every folder:");
+        Console.WriteLine("    claude plugin marketplace add MaveraDSS/mavera-compose");
+        Console.WriteLine("    claude plugin install dss@mavera");
+
+        Console.WriteLine();
+        if (blankRequired.Count == 0)
+        {
+            Console.WriteLine("setup complete; next: `devenv up` (or `devenv check` first)");
+            return 0;
+        }
+        Console.WriteLine($"setup incomplete: {blankRequired.Count} required secret(s) still blank (see above); `devenv up` will refuse until they are set");
+        return 1;
+    }
+
+    // ---------------------------------------------------------------- check
+
+    public static async Task<int> CheckAsync(Workspace ws)
+    {
+        Console.WriteLine($"devenv check  (environment {ws.Environment.Name}, repos in {ws.ReposRoot})");
+        var results = await Preflight.RunAsync(ws, includePorts: true);
+        Preflight.Print(results);
+        var failed = results.Count(r => !r.Ok);
+        Console.WriteLine(failed == 0 ? "all checks passed" : $"{failed} check(s) failed");
+        return failed == 0 ? 0 : 1;
+    }
+
+    // --------------------------------------------------------------- render
+
+    public static int Render(Workspace ws, CliOptions o)
+    {
+        foreach (var r in Renderers.All(ws))
+        {
+            if (o.DryRun)
+            {
+                Console.WriteLine($"----- {r.Path}");
+                Console.WriteLine(r.Content);
+            }
+            else
+            {
+                var backup = Renderers.Write(r, ws);
+                Console.WriteLine($"wrote {r.Path}");
+                if (backup is not null) Console.WriteLine($"  previous hand-written file saved as {backup}");
+            }
+            foreach (var w in r.Warnings) Console.WriteLine($"  warning ({r.Name}): {w}");
+        }
+        if (ws.LocalServices.Count > 0)
+        {
+            Console.WriteLine($"local services routed to localhost in libertine: {string.Join(", ", ws.LocalServices.Select(s => $"{s.Name} (:{s.Port})"))}");
+        }
+        return 0;
+    }
+
+    // ------------------------------------------------------------------- up
+
+    public static async Task<int> UpAsync(Workspace ws, CliOptions o)
+    {
+        if (File.Exists(ws.StateFile))
+        {
+            var existing = ReadState(ws);
+            if (existing is not null && existing.Processes.Any(p => ProcessRunner.IsAlive(p.Pid)))
+            {
+                throw new DevenvException("something is already running (see `devenv status`); run `devenv down` first");
+            }
+            File.Delete(ws.StateFile);
+        }
+
+        if (!o.Supervisor)
+        {
+            // Clone-on-demand happens in the foreground process so the developer sees git's output and
+            // any credential prompt; the supervisor finds the repos in place.
+            var plan = Repos.Plan(ws.Manifest, ws.ReposRoot, ws.LocalServices, o.Branch);
+            await Repos.EnsureAsync(ws, plan);
+        }
+
+        if (o.Detach && !o.Supervisor)
+        {
+            return await DetachAsync(ws, o);
+        }
+
+        var echo = !o.Supervisor;
+        if (o.Supervisor)
+        {
+            // Background mode: nobody is watching this console, and its stdio pipes close when the
+            // parent `up -d` returns. Everything goes to devenv.log instead.
+            Directory.CreateDirectory(ws.LogDir);
+            var log = new StreamWriter(Path.Combine(ws.LogDir, "devenv.log"), append: false) { AutoFlush = true };
+            Console.SetOut(log);
+            Console.SetError(log);
+        }
+        if (!o.SkipPreflight)
+        {
+            Console.WriteLine("preflight");
+            var results = await Preflight.RunAsync(ws, includePorts: true);
+            Preflight.Print(results);
+            if (results.Any(r => !r.Ok))
+            {
+                throw new DevenvException("preflight failed; fix the lines marked FAIL (or --skip-preflight if you know better)");
+            }
+        }
+
+        Console.WriteLine("render");
+        var rendered = Renderers.All(ws);
+        foreach (var r in rendered)
+        {
+            var backup = Renderers.Write(r, ws);
+            Console.WriteLine($"  wrote {r.Path}");
+            if (backup is not null) Console.WriteLine($"  previous hand-written file saved as {backup}");
+            foreach (var w in r.Warnings) Console.WriteLine($"  warning ({r.Name}): {w}");
+        }
+
+        GuardMail(ws, o, rendered);
+        await GuardMigrationsAsync(ws, o, rendered);
+
+        if (ws.Local.Infra)
+        {
+            await Infra.UpAsync(ws);
+        }
+        else
+        {
+            Console.WriteLine("infra: skipped (--no-infra or devenv.local.json); libertine's telemetry export will just fail quietly");
+        }
+
+        var specs = BuildProcessSpecs(ws);
+        using var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+        using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; cts.Cancel(); });
+        using var sighup = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? null
+            : PosixSignalRegistration.Create(PosixSignal.SIGHUP, ctx => { ctx.Cancel = true; if (!o.Supervisor) cts.Cancel(); });
+
+        var children = new List<ChildProcess>();
+        try
+        {
+            Console.WriteLine("start");
+            foreach (var spec in specs)
+            {
+                Console.WriteLine($"  {spec.Name}: {string.Join(' ', spec.Command)}  (in {spec.WorkingDir})");
+                children.Add(ChildProcess.Start(spec, ws.LogDir, echo));
+            }
+            WriteState(ws, children);
+
+            var healthy = true;
+            foreach (var child in children)
+            {
+                var spec = child.Spec;
+                var result = await Health.WaitAsync(spec.HealthUrl, spec.Port, spec.StartTimeout, () => !child.HasExited, acceptClientErrors: spec.EdgeHealthUrl is null, cts.Token, spec.Tolerated);
+                Console.WriteLine($"  {spec.Name}: {spec.HealthUrl ?? $"port {spec.Port}"} -> {result.Detail}");
+                if (result.IsDegraded)
+                {
+                    Console.WriteLine($"  warning ({spec.Name}): runs degraded; health check(s) {string.Join(", ", result.Degraded!)} fail because their secrets are blank, everything else works");
+                }
+                healthy &= result.Ok;
+                if (result.Ok && spec.EdgeHealthUrl is not null)
+                {
+                    var edge = await Health.ProbeWithRetryAsync(spec.EdgeHealthUrl, cts.Token);
+                    Console.WriteLine($"  {spec.Name}: {spec.EdgeHealthUrl} -> {edge.Detail}{(edge.Ok ? "" : "  (remote side not reachable through libertine; check Zscaler and the log)")}");
+                    healthy &= edge.Ok;
+                }
+            }
+
+            if (!healthy)
+            {
+                Console.Error.WriteLine($"not everything came up; logs are in {ws.LogDir}");
+                if (!o.Supervisor)
+                {
+                    return 1;
+                }
+            }
+            else
+            {
+                Console.WriteLine();
+                var locals = ws.LocalServices.Count == 0 ? "" : $"  local: {string.Join(", ", ws.LocalServices.Select(s => $"{s.Name} :{s.Port}"))}";
+                Console.WriteLine($"ready: frontend {ws.FrontendOrigin}  libertine {ws.GatewayOrigin}  remote {ws.Environment.Name}{locals}");
+                Console.WriteLine(o.Supervisor ? $"logs in {ws.LogDir}; stop with `devenv down`" : "Ctrl+C stops the processes (docker infra stays up; `devenv down` stops that too)");
+            }
+
+            // Wait until cancelled or a child dies.
+            while (!cts.IsCancellationRequested && children.All(c => !c.HasExited))
+            {
+                await Task.Delay(1000, CancellationToken.None);
+            }
+            var dead = children.FirstOrDefault(c => c.HasExited);
+            if (dead is not null && !cts.IsCancellationRequested)
+            {
+                Console.Error.WriteLine($"{dead.Spec.Name} exited with code {SafeExitCode(dead.Process)}; stopping the rest (log: {dead.LogFile})");
+                return 1;
+            }
+            return 0;
+        }
+        finally
+        {
+            Console.WriteLine("stopping");
+            foreach (var child in Enumerable.Reverse(children))
+            {
+                child.Stop();
+                child.Dispose();
+            }
+            if (File.Exists(ws.StateFile))
+            {
+                File.Delete(ws.StateFile);
+            }
+        }
+    }
+
+    /// <summary>A service that sends mail only starts with --allow-mail, a non-production mail environment and a test address.</summary>
+    private static void GuardMail(Workspace ws, CliOptions o, IReadOnlyList<Renderers.Rendered> rendered)
+    {
+        var problems = ws.LocalServices.Where(s => s.SendsMail)
+            .SelectMany(s => Guards.Mail(rendered.First(r => r.Name == s.Name).Content, s.Name, o.AllowMail))
+            .ToList();
+        if (problems.Count > 0)
+        {
+            throw new DevenvException("mail guard:\n  - " + string.Join("\n  - ", problems));
+        }
+    }
+
+    /// <summary>A local service that applies migrations at startup may only start when the target database already has every script in the checkout.</summary>
+    private static async Task GuardMigrationsAsync(Workspace ws, CliOptions o, IReadOnlyList<Renderers.Rendered> rendered)
+    {
+        var refused = new List<string>();
+        var target = $"the shared {ws.Environment.Name} database";
+        foreach (var service in ws.LocalServices.Where(s => s.RunsMigrations))
+        {
+            var config = rendered.First(r => r.Name == service.Name);
+            var projectDir = Path.Combine(ws.RepoPath(service.Repo), service.ProjectDir);
+            Console.WriteLine($"migrations: {service.Name} applies database migrations at startup against {target}; checking");
+            var check = await MigrationPreflight.CheckAsync(service, projectDir, config.Content, CancellationToken.None);
+            var decision = MigrationPreflight.Decide(check, o.AllowMigrations);
+            Console.WriteLine($"  {service.Name}: {decision.Reason}");
+            foreach (var script in check.Pending.Take(20)) Console.WriteLine($"    pending: {script}");
+            if (check.Pending.Count > 20) Console.WriteLine($"    ... and {check.Pending.Count - 20} more");
+            if (!decision.Start) refused.Add(service.Name);
+        }
+        if (refused.Count > 0)
+        {
+            throw new DevenvException(
+                $"refusing to start {string.Join(", ", refused)}: it would change the shared {ws.Environment.Name} database schema. " +
+                "Rebase onto the branch the environment runs, or pass --allow-migrations if that is really what you want.");
+        }
+    }
+
+    private static async Task<int> DetachAsync(Workspace ws, CliOptions o)
+    {
+        // Run the preflight here so the user sees failures; the supervisor skips it.
+        Console.WriteLine("preflight");
+        var results = await Preflight.RunAsync(ws, includePorts: true);
+        Preflight.Print(results);
+        if (results.Any(r => !r.Ok))
+        {
+            throw new DevenvException("preflight failed; fix the lines marked FAIL");
+        }
+
+        var args = new List<string> { "up", "--supervisor", "--skip-preflight", "--root", ws.Root };
+        args.AddRange(o.RawArgs.Where(a => a is not ("-d" or "--detach" or "up" or "--skip-preflight")).Where(a => a != "--root").ToList());
+        // A pure Process.Start of ourselves: dotnet <devenv.dll> ... works both under `dotnet run` and as an installed tool.
+        var dll = Path.Combine(AppContext.BaseDirectory, "devenv.dll");
+        var command = new List<string> { "dotnet", dll };
+        command.AddRange(args);
+        var psi = ProcessRunner.StartInfo(command[0], command.Skip(1).ToList(), ws.Root, new Dictionary<string, string>());
+        Directory.CreateDirectory(ws.LogDir);
+        // Give the supervisor its own pipes so it does not inherit this terminal (a pipeline such as
+        // `devenv up -d | tee` would otherwise never see end of file). The supervisor writes its own
+        // console output to .state/logs/devenv.log; these pipes are drained and discarded.
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError = true;
+        psi.RedirectStandardInput = true;
+        var supervisor = Process.Start(psi) ?? throw new DevenvException("could not start the background supervisor");
+        supervisor.OutputDataReceived += (_, _) => { };
+        supervisor.ErrorDataReceived += (_, _) => { };
+        supervisor.BeginOutputReadLine();
+        supervisor.BeginErrorReadLine();
+        Console.WriteLine($"supervisor started (pid {supervisor.Id}); waiting for health, logs in {ws.LogDir}");
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(6);
+        while (DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(3000);
+            if (supervisor.HasExited)
+            {
+                Console.Error.WriteLine($"supervisor exited with code {supervisor.ExitCode}; see {Path.Combine(ws.LogDir, "devenv.log")}");
+                return 1;
+            }
+            var state = ReadState(ws);
+            if (state is null || state.Processes.Count == 0)
+            {
+                continue;
+            }
+            var all = true;
+            foreach (var p in state.Processes)
+            {
+                var r = await Health.ProbeAsync(p);
+                all &= r.Ok;
+            }
+            if (all)
+            {
+                return await StatusAsync(ws);
+            }
+        }
+        Console.Error.WriteLine("timed out waiting for the processes to answer; `devenv status` for details");
+        return 1;
+    }
+
+    // ----------------------------------------------------------------- down
+
+    public static async Task<int> DownAsync(Workspace ws)
+    {
+        var state = ReadState(ws);
+        if (state is null)
+        {
+            Console.WriteLine("nothing recorded as running");
+        }
+        else
+        {
+            if (state.SupervisorPid != Environment.ProcessId && ProcessRunner.IsAlive(state.SupervisorPid))
+            {
+                Console.WriteLine($"stopping supervisor (pid {state.SupervisorPid})");
+                ProcessRunner.KillTree(state.SupervisorPid);
+            }
+            foreach (var p in state.Processes)
+            {
+                var stopped = ProcessRunner.KillTree(p.Pid);
+                Console.WriteLine($"  {p.Name} (pid {p.Pid}): {(stopped ? "stopped" : "was not running")}");
+            }
+            File.Delete(ws.StateFile);
+        }
+        if (ws.Local.Infra)
+        {
+            await Infra.DownAsync(ws);
+        }
+        return 0;
+    }
+
+    // --------------------------------------------------------------- status
+
+    public static async Task<int> StatusAsync(Workspace ws, bool json = false)
+    {
+        var report = await BuildStatusAsync(ws);
+        if (json)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(report, Json.Options));
+            return report.Ok ? 0 : 1;
+        }
+
+        Console.WriteLine($"devenv status  (environment {report.Environment})");
+        if (report.Supervisor is null)
+        {
+            Console.WriteLine("  processes: none started by devenv");
+        }
+        else
+        {
+            Console.WriteLine($"  started {report.Supervisor.StartedAt:yyyy-MM-dd HH:mm}, supervisor pid {report.Supervisor.Pid} {(report.Supervisor.Alive ? "(running)" : "(gone)")}");
+            foreach (var p in report.Processes)
+            {
+                Console.WriteLine($"  {p.Name,-24} pid {p.Pid,-7} :{p.Port,-5} {(p.Alive ? "running" : "stopped"),-8} {p.HealthUrl ?? "(port check)"} -> {p.Detail}");
+            }
+        }
+        if (report.InfraEnabled)
+        {
+            Console.WriteLine(report.Infra is null
+                ? "  infra: docker not available"
+                : report.Infra.Count == 0 ? "  infra: not running" : $"  infra: {string.Join(", ", report.Infra)}");
+        }
+        Console.WriteLine($"  database: {report.Database}");
+        foreach (var s in report.LocalServices)
+        {
+            Console.WriteLine($"  {s.Name}: {s.Path} @ {s.Branch ?? "(not cloned)"}");
+        }
+        return report.Ok ? 0 : 1;
+    }
+
+    /// <summary>The status as data: the text view and `--json` both render this.</summary>
+    public static async Task<StatusReport> BuildStatusAsync(Workspace ws)
+    {
+        var report = new StatusReport
+        {
+            Environment = ws.Environment.Name,
+            Database = ws.Environment.Sql.Host,
+            FrontendUrl = ws.FrontendOrigin,
+            LibertineUrl = ws.GatewayOrigin,
+            LogDir = ws.LogDir,
+            InfraEnabled = ws.Local.Infra,
+            Testing = ws.Environment.Testing,
+        };
+        var state = ReadState(ws);
+        var ok = state is not null;
+        if (state is not null)
+        {
+            report.Supervisor = new SupervisorStatus { Pid = state.SupervisorPid, Alive = ProcessRunner.IsAlive(state.SupervisorPid), StartedAt = state.StartedAt };
+            foreach (var p in state.Processes)
+            {
+                var alive = ProcessRunner.IsAlive(p.Pid);
+                if (p.Tolerated.Count == 0 && ws.Manifest.FindService(p.Name) is { } spec)
+                {
+                    // State written by an older devenv has no tolerated list; decide from today's manifest and secrets.
+                    p.Tolerated = spec.ToleratedHealthChecks(ws.Secrets);
+                }
+                var health = alive ? await Health.ProbeAsync(p) : new HealthResult(false, "process gone");
+                report.Processes.Add(new ProcessStatus
+                {
+                    Name = p.Name, Pid = p.Pid, Port = p.Port, Alive = alive, Healthy = health.Ok, Detail = health.Detail, HealthUrl = p.HealthUrl, LogFile = p.LogFile,
+                    Degraded = health.Degraded?.ToList() ?? new List<string>(),
+                });
+                ok &= alive && health.Ok;
+            }
+        }
+        if (ws.Local.Infra)
+        {
+            report.Infra = (await Infra.RunningAsync(ws))?.ToList();
+        }
+        foreach (var s in ws.LocalServices)
+        {
+            report.LocalServices.Add(new LocalServiceStatus
+            {
+                Name = s.Name, Repo = s.Repo, Path = ws.RepoPath(s.Repo), Branch = await Repos.CurrentBranchAsync(ws.RepoPath(s.Repo)), Port = s.Port,
+                HealthUrl = s.HealthPath is null ? null : $"http://localhost:{s.Port}{s.HealthPath}",
+            });
+        }
+        report.Ok = ok;
+        return report;
+    }
+
+    // ----------------------------------------------------------------- logs
+
+    public static int Logs(Workspace ws, CliOptions o)
+    {
+        var name = o.Target ?? "devenv";
+        var file = Path.Combine(ws.LogDir, name + ".log");
+        if (!File.Exists(file))
+        {
+            var available = LogTail.Available(ws.LogDir);
+            throw new DevenvException(available.Count == 0
+                ? $"no logs yet in {ws.LogDir}; nothing has been started"
+                : $"no log for '{name}'; available: {string.Join(", ", available)}");
+        }
+        // Read with sharing: the process is still writing to it.
+        using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(stream);
+        var lines = new List<string>();
+        while (reader.ReadLine() is { } line) lines.Add(line);
+        foreach (var line in LogTail.Last(lines, o.Tail)) Console.WriteLine(line);
+        return 0;
+    }
+
+    // ---------------------------------------------------------------- token
+
+    /// <summary>Prints only the token on stdout, so `T=$(devenv token)` works; everything else goes to stderr.</summary>
+    public static async Task<int> TokenAsync(Workspace ws)
+    {
+        var token = await Auth.GetTokenAsync(ws);
+        Console.Error.WriteLine($"token for {ws.Secrets[Auth.TestUserKey]} via {token.Origin}/connect/token, expires in {token.ExpiresIn}s");
+        Console.WriteLine(token.AccessToken);
+        return 0;
+    }
+
+    // -------------------------------------------------------------- helpers
+
+    public static List<ProcessSpec> BuildProcessSpecs(Workspace ws)
+    {
+        var m = ws.Manifest;
+        var specs = new List<ProcessSpec>();
+
+        // Local backend services first: they take longest (build, migrations) and libertine does not need them to be up.
+        foreach (var s in ws.LocalServices)
+        {
+            var env = DotnetEnvironment($"http://localhost:{s.Port}");
+            var host = ws.DotnetHostFor(s);
+            if (host != "dotnet")
+            {
+                // The side-by-side x64 install rarely has the exact runtime the service targets; let it roll forward.
+                env["DOTNET_ROLL_FORWARD"] = "Major";
+            }
+            specs.Add(new ProcessSpec(
+                s.Name,
+                ws.RepoPath(s.Repo),
+                new[] { host, "run", "--project", s.Project!, "--no-launch-profile" },
+                env,
+                s.Port,
+                s.HealthPath is null ? null : $"http://localhost:{s.Port}{s.HealthPath}",
+                null,
+                TimeSpan.FromMinutes(5),
+                s.ToleratedHealthChecks(ws.Secrets)));
+        }
+
+        specs.Add(new ProcessSpec(
+            "libertine",
+            ws.RepoPath(m.Gateway.Repo),
+            new[] { "dotnet", "run", "--project", m.Gateway.Project, "--no-launch-profile" },
+            DotnetEnvironment(ws.GatewayOrigin),
+            m.Gateway.Port,
+            ws.GatewayOrigin + m.Gateway.HealthPath,
+            ws.GatewayOrigin + m.Gateway.EdgeHealthPath,
+            TimeSpan.FromMinutes(3)));
+
+        specs.Add(new ProcessSpec(
+            "frontend",
+            Path.Combine(ws.RepoPath(m.Frontend.Repo), m.Frontend.WorkingDir),
+            m.Frontend.Command,
+            new Dictionary<string, string>
+            {
+                ["NODE_ENV"] = "development",
+                ["NEXT_TELEMETRY_DISABLED"] = "1",
+                ["PORT"] = m.Frontend.Port.ToString(),
+            },
+            m.Frontend.Port,
+            ws.FrontendOrigin + m.Frontend.HealthPath,
+            null,
+            TimeSpan.FromMinutes(4)));
+
+        return specs;
+    }
+
+    private static Dictionary<string, string> DotnetEnvironment(string urls) => new()
+    {
+        ["ASPNETCORE_ENVIRONMENT"] = "Development",
+        ["DOTNET_ENVIRONMENT"] = "Development",
+        ["ASPNETCORE_URLS"] = urls,
+        ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1",
+    };
+
+    private static void WriteState(Workspace ws, IEnumerable<ChildProcess> children)
+    {
+        Directory.CreateDirectory(ws.StateDir);
+        var state = new RunState
+        {
+            SupervisorPid = Environment.ProcessId,
+            StartedAt = DateTimeOffset.Now,
+            Environment = ws.Environment.Name,
+            Infra = ws.Local.Infra,
+            Processes = children.Select(c => new RunningProcess
+            {
+                Name = c.Spec.Name,
+                Pid = c.Process.Id,
+                Port = c.Spec.Port,
+                HealthUrl = c.Spec.HealthUrl,
+                LogFile = c.LogFile,
+                Tolerated = c.Spec.Tolerated is null ? new Dictionary<string, string>() : new Dictionary<string, string>(c.Spec.Tolerated),
+            }).ToList(),
+        };
+        File.WriteAllText(ws.StateFile, JsonSerializer.Serialize(state, Json.Options));
+    }
+
+    private static RunState? ReadState(Workspace ws)
+    {
+        if (!File.Exists(ws.StateFile)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<RunState>(File.ReadAllText(ws.StateFile), Json.Options);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string SafeExitCode(Process p)
+    {
+        try { return p.ExitCode.ToString(); } catch { return "?"; }
+    }
+}

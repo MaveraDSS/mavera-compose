@@ -1,0 +1,111 @@
+{
+  "ConnectionStrings": {
+    "MaveraContext": "Server=tcp:$ConnectionStrings_DB_Server,1433;Initial Catalog=$ConnectionStrings_DB_Name;User Id=$ConnectionStrings_DB_User;Password=$ConnectionStrings_DB_Pass;Integrated Security=False;Trusted_Connection=False;Persist Security Info=False;Encrypt=True;TrustServerCertificate=True;MultipleActiveResultSets=true;Connection Timeout=30;"
+  },
+  "CryptoSettings": {
+    "CryptoIV": "$CryptoSettings_CryptoIV",
+    "CryptoKey": "$CryptoSettings_CryptoKey"
+  },
+  "AutoSignComplements": {
+    "AutoSignWaitingTimeInDays": 180
+  },
+  "AutoAssignOnReturn": {
+    "ReturnAutoAssignLimit": 2
+  },
+  "SecondOpinionQualification": {
+    "SecondOpinionQualificationCount": 100
+  },
+  "BackGroundTasks": {
+    "NumberDaysToExpire": 14,
+    "ComplementsAutoSignNotificationBeforeInDays": 14,
+    "ComplementAutoSignInDaysCount": 0,
+    "AutoSignComplementAnswer": "AutoSignComplementAnswerText"
+  },
+  "HandleCaseSettings": {
+    "NumberOfMonthToCheckOldCases": 6,
+    "NumberOfMonthToDeleteOldCases": 12,
+    "EmailRemainderIntervalInDays": 7,
+    "NumberOfOldCasesToTake": 100,
+    "DifferenceInMonthToShowCriticalInSite": 1,
+    "NumberOfMonthToMarkCaseToArchive": 6
+  },
+  "EvaluationAttributeSettings": {
+    "DefaultMaxLength": "$DefaultMaxLengthEvaluationAttribute",
+    "MaxCharCountExplanationMedicalTerminology": "$MaxCharCountExplanationMedicalTerminology",
+    "MaxLengthExpertOpinion": "$MaxLengthExpertOpinion"
+  },
+  "Logging": {
+    "IncludeScopes": false,
+    "LogLevel": {
+      "Default": "$Log_Level",
+      "System": "$Log_Level",
+      "Microsoft": "$Log_Level"
+    },
+    "Console": {
+      "IncludeScopes": "$Log_IncludeScopes"
+    }
+  },
+  "Messaging": {
+    "Host": "rabbitmq.rabbitmq.svc.cluster.local",
+    "Username": "$MessageBroker_Username",
+    "Password": "$MessageBroker_Password",
+    "VirtualHost": "$MessageBroker_VirtualHost",
+    "DefaultQueue": ""
+  },
+  "SecuritySettings": {
+    "Authority": "http://$ServiceSettings_Services_IdentityService.svc.cluster.local",
+    "Audience": "api",
+    "Audiences": [ "api", "internalapi" ],
+    "OktaAuthority": "https://$Okta_Domain/oauth2/$Okta_AuthServerId",
+    "OktaAudience": "$Okta_Audience",
+    "OktaAudiences": "$Okta_Audiences"
+  },
+  "PathSettings": {
+    "DocumentPath": "VeraCaseFiles",
+    "UserProfilePicturesPath": "user_profile_pictures"
+  },
+  "DistributedCacheProjectSettings": {
+    "CacheService": "$RedisInstance",
+    "Port": "$RedisPort",
+    "CacheType": "$CacheType" //{inmemory, redis}
+  },
+  "CsvGeneratorSettings": {
+    "InvoicingDays": 5,
+    "MaveraNetworkHeader": "Företag;Ärendenummer;Prövningstyp;Handläggningstid;Specialistområde;Grad;Uppladdningsdatum;Skadereglerare;Specialist;Bedömingsdatum;Timmar;Minuter;Ersättningsgrund;PostalHantering;Veckodag;Granskning;ExpertiseArea;fakturaAddress;Avdelning;Kategori;Förtydliganden;Kompletteringar;EvaluationId;HögPrioritet;IsBilledManualAssignment",
+    "NonMaveraNetworkHeader": "Company;CaseNumber;EvaluationType;ProcessingTime;SpecialistArea;Grade;UploadDate;ClaimHandler;Expert;AssessmentDate;Hours;Minutes;TypeOfInjury;PostalHandling;Weekday;Review;InvoiceAddress;Department;Category;Clarifications;Complements;EvaluationId;HighPriority",
+    "BusinessCentralHeader": ";GUID_Specialistområde;GUID_ersättningsgrund;ID_Kund;ID_Leverantör;Kreditdatum;KreditMR;KreditKund;GranskningTid"
+  },
+  "ServiceSettings": {
+    "TranslationService": "http://$ServiceSettings_Services_Translation.svc.cluster.local",
+    "DocumentService": "http://$ServiceSettings_Services_DocumentManagement.svc.cluster.local/Vera/DocumentService",
+    "CaregiverService": "http://$ServiceSettings_Services_Caregivers.svc.cluster.local/caregivers",
+    "MedicalAdvisorNetworkService": "$ServiceSettings_Services_MedicalAdvisorsNetwork",
+    "FileConversionService": "http://$ServiceSettings_Services_FileConversion.svc.cluster.local/FileConversionService",
+    "KuralinkClientService": "http://$ServiceSettings_Services_Kuralink.svc.cluster.local/KuralinkClient",
+    "UserService": "http://$ServiceSettings_Services_UserService.svc.cluster.local/Vera/UserService", /*When external service with https always*/
+    "IdentityClientService": "http://$ServiceSettings_Services_IdentityClient.svc.cluster.local",
+    "EvaluationService": "http://$ServiceSettings_Services_EvaluationService.svc.cluster.local/Vera/EvaluationService",
+    "EnhancedPatientViewServiceUrl": "http://$ServiceSettings_Services_EnhancedPatientView.svc.cluster.local/enhanced-patient-view"
+  },
+  "SmbSettings": {
+    "Server": "$SmbSettings_Server",
+    "Share": "$SmbSettings_Share",
+    "UserName": "$SmbSettings_UserName",
+    "Password": "$SmbSettings_Password"
+  },
+  "InternalServices": {
+    "disco": "https://$Okta_Domain/oauth2/$Okta_AuthServerId",
+    "clientId": "$Okta_InternalServices_ClientId",
+    "scope": "internalapi",
+    "secret": "$Okta_InternalServices_Secret",
+    "SystemAccountUserId": "9BF59C0E-262C-E311-93FA-0016C7CE037E"
+  },
+  "serviceName": {
+    "serviceEnv": "$ServiceSettings_ENV"
+  },
+  "OpenTelemetry": {
+    "OTLP": {
+      "Endpoint": "$Tracing_Connection_String"
+    }
+  }
+}

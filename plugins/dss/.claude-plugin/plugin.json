@@ -1,0 +1,10 @@
+{
+  "name": "dss",
+  "description": "Mavera DSS local development with devenv: map a Jira ticket to the services to run locally, reproduce a bug before fixing it, verify a fix against the running stack with before/after evidence, or work a ticket end to end.",
+  "version": "0.3.0",
+  "author": {
+    "name": "Mavera DSS"
+  },
+  "repository": "https://github.com/MaveraDSS/mavera-compose",
+  "keywords": ["mavera", "dss", "devenv", "jira"]
+}

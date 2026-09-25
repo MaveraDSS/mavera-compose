@@ -1,0 +1,734 @@
+{
+  "ServiceSettings": {
+    "Services": [
+      {
+        "Name": "Monolith",
+        "Url": "https://$ServiceSettings_EnvURL/Vera/",
+        "Domain": "https://$ServiceSettings_EnvURL/"
+      },
+      {
+        "Name": "MedicalAdvisorNetwork",
+        "Url": "$ServiceSettings_Services_MedicalAdvisorsNetwork",
+        "Domain": "$ServiceSettings_Services_MedicalAdvisorsNetwork"
+      },
+      {
+        "Name": "DocumentProcessor",
+        "Url": "http://$ServiceSettings_Services_DocumentProcessor.svc.cluster.local/",
+        "Domain": "http://$ServiceSettings_Services_DocumentProcessor.svc.cluster.local/"
+      },
+      {
+        "Name": "Timeline",
+        "Url": "http://$ServiceSettings_Services_Timeline.svc.cluster.local/",
+        "Domain": "http://$ServiceSettings_Services_Timeline.svc.cluster.local/"
+      },
+      {
+        "Name": "DocumentManagement",
+        "Url": "http://$ServiceSettings_Services_DocumentManagement.svc.cluster.local/Vera/DocumentService/",
+        "Domain": "http://$ServiceSettings_Services_DocumentManagement.svc.cluster.local/Vera/DocumentService/"
+      },
+      {
+        "Name": "EvaluationService",
+        "Url": "http://$ServiceSettings_Services_EvaluationService.svc.cluster.local/Vera/",
+        "Domain": "http://$ServiceSettings_Services_EvaluationService.svc.cluster.local/"
+      },
+      {
+        "Name": "UserService",
+        "Url": "http://$ServiceSettings_Services_UserService.svc.cluster.local/Vera/",
+        "Domain": "http://$ServiceSettings_Services_UserService.svc.cluster.local/Vera/"
+      }
+    ]
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "$Log_Level",
+      "Microsoft.AspNetCore": "$Log_Level",
+      "Microsoft.EntityFrameworkCore.Database.Command": "Warning"
+    },
+    "Console": {
+      "IncludeScopes": "$Log_IncludeScopes"
+    }
+  },
+  "AllowedHosts": "*",
+  "SecuritySettings": {
+    "Authority": "http://$ServiceSettings_Services_IdentityService.svc.cluster.local",
+    "Audience": "api",
+    "Audiences": [ "api", "internalapi" ],
+    "OktaAuthority": "https://$Okta_Domain/oauth2/$Okta_AuthServerId",
+    "OktaAudience": "$Okta_Audience",
+    "OktaAudiences": "$Okta_Audiences"
+  },
+  "InternalServiceSettings": {
+    "disco": "https://$Okta_Domain/oauth2/$Okta_AuthServerId",
+    "clientId": "$Okta_InternalServices_ClientId",
+    "scope": "internalapi",
+    "secret": "$Okta_InternalServices_Secret"
+  },
+  "ReverseProxy": {
+    "Routes": {
+      "caregivers": {
+        "ClusterId": "mavera-caregivers",
+        "Match": {
+          "Path": "libertine/caregivers/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "caregivers/{**catch-all}"
+          }
+        ]
+      },
+      "evaluationCaregivers": {
+        "ClusterId": "mavera-caregivers",
+        "Match": {
+          "Path": "libertine/evaluationcaregiver/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "caregivers/evaluationcaregiver/{**catch-all}"
+          }
+        ]
+      },
+      "evaluation-list": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/list",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/Evaluation/pagedList"
+          }
+        ]
+      },
+      "evaluationServiceQuestions": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/{evaluationId}/questions",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/EvaluationQuestion/{evaluationId}/questions"
+          }
+        ]
+      },
+      "evaluationServiceNote": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/{evaluationId}/note",
+          "Methods": [ "POST" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/Note"
+          }
+        ]
+      },
+      "evaluationServiceNotes": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/{evaluationId}/notes",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/Note/{evaluationId}"
+          }
+        ]
+      },
+      "evaluationServiceMessage": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/{evaluationId}/message",
+          "Methods": [ "POST" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/message"
+          }
+        ]
+      },
+      "evaluationServiceMessages": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/{evaluationId}/messages",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/message/{evaluationId}"
+          }
+        ]
+      },
+      "evaluationServiceSign": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/sign",
+          "Methods": [ "POST" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/Evaluation/signEvaluation"
+          }
+        ]
+      },
+      "evaluationServiceSend": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/send",
+          "Methods": [ "POST" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/Assign/send"
+          }
+        ]
+      },
+      "evaluationServiceShare": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/share",
+          "Methods": [ "PUT" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/ShareEvaluation"
+          }
+        ]
+      },
+      "evaluationService": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/evaluation/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/Evaluation/{**catch-all}"
+          }
+        ]
+      },
+      "evaluationServiceAll": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/EvaluationService/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/{**catch-all}"
+          }
+        ]
+      },
+      "mavera-case": {
+        "ClusterId": "mavera-evaluation-service",
+        "Match": {
+          "Path": "libertine/case/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/EvaluationService/maveracase/{**catch-all}"
+          }
+        ]
+      },
+      "pdf-search": {
+        "ClusterId": "mavera-pdf-search",
+        "Match": {
+          "Path": "libertine/pdf-search/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "{**catch-all}"
+          }
+        ]
+      },
+      "expert-patch-route": {
+        "ClusterId": "mavera-user-service",
+        "Match": {
+          "Path": "libertine/user/{**catch-all}",
+          "Methods": [ "PATCH", "PUT" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "user/{**catch-all}"
+          }
+        ]
+      },
+      "company-admin": {
+        "ClusterId": "mavera-user-service",
+        "Match": {
+          "Path": "libertine/companyadmin/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "companyadmin/{**catch-all}"
+          }
+        ]
+      },
+      "documents": {
+        "ClusterId": "mavera-document-service",
+        "Match": {
+          "Path": "libertine/DocumentService/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/DocumentService/{**catch-all}"
+          }
+        ]
+      },
+      "document-type-route": {
+        "ClusterId": "mavera-document-service",
+        "Match": {
+          "Path": "libertine/EvaluationDocument/documentType",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/DocumentService/EvaluationDocument/documentType"
+          }
+        ]
+      },
+      "documentProcessor": {
+        "ClusterId": "mavera-ai-document-processor",
+        "Match": {
+          "Path": "libertine/ai/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/documentprocessor/{**catch-all}"
+          }
+        ]
+      },
+      "document-classifier-by-documents": {
+        "ClusterId": "mavera-document-classifier",
+        "Match": {
+          "Path": "libertine/ai/documentclassifier",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/documentclassifier/query"
+          }
+        ]
+      },
+      "document-classifier-by-evaluation": {
+        "ClusterId": "mavera-document-classifier",
+        "Match": {
+          "Path": "libertine/ai/documentclassifier/{evaluationId}",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/documentclassifier/query/{evaluationId}"
+          }
+        ]
+      },
+      "idp2-inference": {
+        "ClusterId": "mavera-idp2-inference",
+        "Match": {
+          "Path": "libertine/idp2/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "{**catch-all}"
+          }
+        ]
+      },
+      "evaluation-timeline": {
+        "ClusterId": "mavera-timeline-service",
+        "Match": {
+          "Path": "libertine/evaluation/{evaluationId}/timeline",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/timeline/evaluation/{evaluationId}"
+          }
+        ]
+      },
+      "evaluation-timeline-status": {
+        "ClusterId": "mavera-timeline-service",
+        "Match": {
+          "Path": "libertine/timeline/{evaluationId}/status",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/timeline/{evaluationId}/status"
+          }
+        ]
+      },
+      "evaluation-timeline-documentEventsByPage": {
+        "ClusterId": "mavera-timeline-service",
+        "Match": {
+          "Path": "libertine/timeline/evaluation/documentEvents/{documentId}",
+          "Methods": [ "GET" ]
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/timeline/evaluation/documentEvents/{documentId}"
+          }
+        ]
+      },
+      "enhanced-patient-view": {
+        "ClusterId": "mavera-enhanced-patient-view",
+        "Match": {
+          "Path": "libertine/enhanced-patient-view/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "enhanced-patient-view/{**catch-all}"
+          }
+        ]
+      },
+      "OcrService": {
+        "ClusterId": "OcrService",
+        "Match": {
+          "Path": "libertine/OCRService/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "OCRService/{**catch-all}"
+          }
+        ]
+      },
+      "identity-check": {
+        "ClusterId": "mavera-identity-check",
+        "Match": {
+          "Path": "libertine/IdentityCheck/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "IdentityCheck/{**catch-all}"
+          }
+        ]
+      },
+      "mavera-audit": {
+        "ClusterId": "mavera-audit-service",
+        "Match": {
+          "Path": "libertine/audit-logs/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "audit-logs/{**catch-all}"
+          }
+        ]
+      },
+      "fkassan-service": {
+        "ClusterId": "mavera-fkassan-service",
+        "Match": {
+          "Path": "libertine/fkassan/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "fkassan/{**catch-all}"
+          }
+        ]
+      },
+      "mavera-document-summaries": {
+        "ClusterId": "mavera-document-summaries-service",
+        "Match": {
+          "Path": "libertine/document-summaries/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "documentSummaries/{**catch-all}"
+          }
+        ]
+      },
+      "mavera-pdf-generator": {
+        "ClusterId": "mavera-pdf-generator-service",
+        "Match": {
+          "Path": "libertine/pdf-generator/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "pdf/{**catch-all}"
+          }
+        ]
+      },
+      "mavera-identity-client": {
+        "ClusterId": "identity-client-service",
+        "Match": {
+          "Path": "libertine/identity-client/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "identity-client/{**catch-all}"
+          }
+        ]
+      },
+      "medical-advisor-network": {
+        "ClusterId": "mavera-medical-advisor-network",
+        "Match": {
+          "Path": "libertine/Vera/MedicalAdvisorNetwork/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "{**catch-all}"
+          }
+        ]
+      },
+      "kuralink": {
+        "ClusterId": "mavera-kuralink",
+        "Match": {
+          "Path": "libertine/kuralink/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "KuralinkClient/{**catch-all}"
+          }
+        ]
+      },
+      "dashboard": {
+        "ClusterId": "mavera-dashboard",
+        "Match": {
+          "Path": "libertine/dashboard/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/Dashboard/{**catch-all}"
+          }
+        ]
+      },
+      "news-manager": {
+        "ClusterId": "mavera-news-manager",
+        "Match": {
+          "Path": "libertine/news-manager/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "Vera/NewsManager/{**catch-all}"
+          }
+        ]
+      },
+      "storage": {
+        "ClusterId": "mavera-storage-service",
+        "Match": {
+          "Path": "libertine/storage/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/{**catch-all}"
+          }
+        ]
+      },
+      "file-conversion": {
+        "ClusterId": "mavera-file-conversion-service",
+        "Match": {
+          "Path": "libertine/file-conversion/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "FileConversionService/{**catch-all}"
+          }
+        ]
+      },
+      "client-relevance-score": {
+        "ClusterId": "mavera-ai-client-relevance-score",
+        "Match": {
+          "Path": "libertine/client-relevance-score/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "client_relevance_score/{**catch-all}"
+          }
+        ]
+      },
+      "journalevents-classifier": {
+        "ClusterId": "mavera-ai-journalevents-classifier",
+        "Match": {
+          "Path": "libertine/journalevents-classifier/{**catch-all}"
+        },
+        "Transforms": [
+          {
+            "PathPattern": "api/journaleventsclassifier/{**catch-all}"
+          }
+        ]
+      }
+    },
+    "Clusters": {
+      "mavera-caregivers": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_Caregivers.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-pdf-search": {
+        "Destinations": {
+          "destination": {
+            "Address": "https://mavera.ngrok.pdfsearch.app.ngrok.pizza/"
+          }
+        }
+      },
+      "mavera-user-service": {
+        "Destinations": {
+          "destination": {
+            "Address": "http://$ServiceSettings_Services_UserService.svc.cluster.local/Vera/UserService/"
+          }
+        }
+      },
+      "mavera-document-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_DocumentManagement.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-ai-document-processor": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_DocumentProcessor.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-idp2-inference": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_Idp2/"
+          }
+        }
+      },
+      "mavera-evaluation-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_EvaluationService.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-timeline-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_Timeline.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-enhanced-patient-view": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_EnhancedPatientView.svc.cluster.local/"
+          }
+        }
+      },
+      "OcrService": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_OcrService.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-identity-check": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_IdentityCheck.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-document-classifier": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_DocumentClassifier.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-audit-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_Audit.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-fkassan-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_Fkassan.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-document-summaries-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_DocumentSummaries.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-pdf-generator-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_PdfGenerator.svc.cluster.local/"
+          }
+        }
+      },
+      "identity-client-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_IdentityClient.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-medical-advisor-network": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_MedicalAdvisorsNetwork.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-kuralink": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_Kuralink.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-dashboard": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_Dashboard.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-news-manager": {
+        "Destinations": {
+
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_NewsManager.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-storage-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_StorageService.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-file-conversion-service": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_FileConversion.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-ai-client-relevance-score": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_Client_Relevance_Score.svc.cluster.local/"
+          }
+        }
+      },
+      "mavera-ai-journalevents-classifier": {
+        "Destinations": {
+          "Route": {
+            "Address": "http://$ServiceSettings_Services_JournalEventsClassifier.svc.cluster.local/"
+          }
+        }
+      }
+    }
+  },
+  "serviceName": {
+    "serviceEnv": "$ServiceSettings_ENV"
+  },
+  "OpenTelemetry": {
+    "OTLP": {
+      "Endpoint": "$Tracing_Connection_String"
+    }
+  }
+}
