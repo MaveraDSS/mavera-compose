@@ -14,7 +14,9 @@ devenv down
 ```
 
 Jira: DSS-5583 (parent), DSS-5585 (this tool), DSS-5586 (running services locally), DSS-5587 (guards),
-DSS-5590 (rollout).
+DSS-5590 (rollout). Team guide, including a Claude Code prompt that does the whole setup:
+[Local development with devenv](https://mavera-dss.atlassian.net/wiki/spaces/MD/pages/1154056194/Local+development+with+devenv)
+on Confluence. This README stays the source of truth for commands.
 
 ## How it works
 
@@ -58,14 +60,24 @@ DSS-5590 (rollout).
 
 | | Windows | macOS |
 |---|---|---|
-| .NET SDK 8 or newer | `winget install Microsoft.DotNet.SDK.8` | `brew install dotnet@8` |
-| Node.js 24 | `winget install --id OpenJS.NodeJS.LTS --scope user` | `brew install node@24` |
+| Homebrew | not needed | from [brew.sh](https://brew.sh) or Self-Service |
+| .NET SDK 8 or newer | `winget install Microsoft.DotNet.SDK.8` | `brew install --cask dotnet-sdk` |
+| Node.js 24 | `winget install --id OpenJS.NodeJS.LTS --scope user` | `brew install node@24`, then `brew link --force node@24` |
 | Git | `winget install Git.Git` | `brew install git` |
 | Docker, only for `--local` services | Docker Desktop | Docker Desktop or `brew install colima docker docker-compose` |
+| x64 .NET, Apple Silicon only (see *Apple Silicon note*) | not needed | "macOS x64" SDK installer from dotnet.microsoft.com |
 | Zscaler connected | required for anything on dev02 | same |
 
 No admin rights are needed for the user-scope installs. After installing, open a **new** terminal and run
 `corepack enable` once.
+
+On macOS, avoid `brew install dotnet@8`: Homebrew's versioned .NET and Node formulas are "keg-only" and are
+not put on the PATH, so `dotnet` or `node` is then "command not found". The `dotnet-sdk` cask runs
+Microsoft's installer, and `brew link --force` puts `node@24` on the PATH.
+
+You also need read access to the MaveraDSS repositories on GitHub (the first clone asks you to sign in),
+and for the Claude Code commands, Claude Code itself and Google Chrome, which Claude drives for browser
+checks.
 
 ## First-time setup
 
